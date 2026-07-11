@@ -429,17 +429,29 @@ flowchart LR
 
 ### 配置（src/config.ts）
 
-`loadConfig` 合并 CLI overrides + 环境变量：
+`loadConfig` 按三级优先级合并配置：
+
+```mermaid
+flowchart TD
+  A["CLI overrides<br/>(--allow-write 等)"] --> R["最终 OpAgentConfig"]
+  B["process.env<br/>真实环境变量 + Bun 自动加载的 cwd .env"] --> R
+  C["~/.op_agent/.env 全局配置文件<br/>仅填充上层未设置的键"] --> B
+```
+
+加载流程：先确定 `agentDir`（overrides > `OPAGENT_DIR` 真实 env > `~/.op_agent`），再调用 `loadEnvFile(<agentDir>/.env)` 把缺失键填入 `process.env`（已存在的不覆盖，保证 process.env 优先），最后从 `process.env` 读取所有字段。
+
+`loadEnvFile` 解析规则：跳过空行与 `#` 注释；支持 `export KEY=VALUE`；去除值两侧成对引号；未加引号值的行内 `# 注释` 去除；**仅当 key 不在 process.env 时写入**。文件不存在静默返回（全局 .env 可选）。
 
 | 字段 | 来源 | 默认 |
 |---|---|---|
 | `model` | `OPAGENT_MODEL` | `deepseek/deepseek-v4-flash` |
 | `apiKey` | `DEEPSEEK_API_KEY`/`OPAGENT_API_KEY` | - |
+| `agentDir` | `OPAGENT_DIR` | `~/.op_agent` |
 | `allowWrite` | `--allow-write`/`OPAGENT_ALLOW_WRITE=1` | false |
 | `allowDestructive` | `--allow-destructive`/`OPAGENT_ALLOW_DESTRUCTIVE=1` | false |
 | `llmAudit` | `--llm_audit`/`OPAGENT_LLM_AUDIT=1` | false |
 | `writePaths` | `OPAGENT_WRITE_PATHS` | `<cwd>/workspace` |
-| `auditDbPath` | `OPAGENT_AUDIT_DB` | `~/.opagent/audit.db` |
+| `auditDbPath` | `OPAGENT_AUDIT_DB` | `~/.op_agent/audit.db` |
 | `auditBaseUrl/Model/ApiKey` | `OPAGENT_AUDIT_*` | DeepSeek 端点 / `deepseek-chat` / 同 DEEPSEEK key |
 
 ### 系统提示词（src/prompt.ts）

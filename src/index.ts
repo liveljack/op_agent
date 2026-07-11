@@ -35,9 +35,9 @@ import { LlmAuditor } from "./audit/llm.ts";
 import { loadBuiltinSkills } from "./skills/index.ts";
 
 interface CliArgs {
-  allowWrite: boolean;
-  allowDestructive: boolean;
-  llmAudit: boolean;
+  allowWrite?: boolean;
+  allowDestructive?: boolean;
+  llmAudit?: boolean;
   model?: string;
   cwd?: string;
   print?: string;
@@ -47,9 +47,6 @@ interface CliArgs {
 
 function parseArgs(argv: string[]): CliArgs {
   const args: CliArgs = {
-    allowWrite: false,
-    allowDestructive: false,
-    llmAudit: false,
     selfTest: false,
     help: false,
   };
