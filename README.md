@@ -19,13 +19,14 @@ OpAgent is purpose-built for **lightweight Linux operations**: a single Bun proc
 
 All model-proposed actions pass through a **three-tier defense** before anything executes. Interception happens inside pi's `tool_call` hook (before execution), so the model cannot bypass it.
 
-| Tier | What it does | Code |
-|---|---|---|
-| 1. Pattern (`PolicyGuard`) | Fast deterministic block of destructive commands (`rm -rf`, `mkfs`, `find -delete`, `\| sh`, `eval`, `base64\|sh`, interpreter deletion), destructive SQL (`DROP`/`TRUNCATE`/`DELETE` without `WHERE`), and protected paths (`/etc/shadow`, `~/.ssh`, `/proc`, `/sys`, `/dev`, `/boot`) | [src/safety/policy.ts](src/safety/policy.ts) · [src/safety/patterns.ts](src/safety/patterns.ts) |
-| 2. LLM semantic (`LlmAuditor`) | Audits writes/scripts for variable indirection, obfuscation, exfiltration, privilege escalation. Merged **strict** — LLM can only escalate, never downgrade. Fail-safe: on error, escalates to human confirm. | [src/audit/llm.ts](src/audit/llm.ts) |
-| 3. Confirm gate + audit | Writes/destructive require interactive `y/N`; no UI (print mode) → fail-closed block. Every decision and result goes to the hash-chained audit log. | [src/safety/extension.ts](src/safety/extension.ts) · [src/audit/store.ts](src/audit/store.ts) |
+| Tier                           | What it does                                                                                                                                                                                                                                                                            | Code                                                                                            |
+| ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| 1. Pattern (`PolicyGuard`)     | Fast deterministic block of destructive commands (`rm -rf`, `mkfs`, `find -delete`, `\| sh`, `eval`, `base64\|sh`, interpreter deletion), destructive SQL (`DROP`/`TRUNCATE`/`DELETE` without `WHERE`), and protected paths (`/etc/shadow`, `~/.ssh`, `/proc`, `/sys`, `/dev`, `/boot`) | [src/safety/policy.ts](src/safety/policy.ts) · [src/safety/patterns.ts](src/safety/patterns.ts) |
+| 2. LLM semantic (`LlmAuditor`) | Audits writes/scripts for variable indirection, obfuscation, exfiltration, privilege escalation. Merged **strict** — LLM can only escalate, never downgrade. Fail-safe: on error, escalates to human confirm.                                                                           | [src/audit/llm.ts](src/audit/llm.ts)                                                            |
+| 3. Confirm gate + audit        | Writes/destructive require interactive `y/N`; no UI (print mode) → fail-closed block. Every decision and result goes to the hash-chained audit log.                                                                                                                                     | [src/safety/extension.ts](src/safety/extension.ts) · [src/audit/store.ts](src/audit/store.ts)   |
 
 **Guarantees:**
+
 - Deleting tools (`controlled_delete`, `db_mutate`) are **not registered by default** — only with `--allow-destructive`, and still require confirmation + reason ([src/tools/destructive.ts](src/tools/destructive.ts)).
 - `write`/`edit` tools are off by default — need `--allow-write` + per-action confirm.
 - Collectors that run commands/SQL route through `PolicyGuard` too (defense in depth) — [src/monitor/builtin/collectors/file_sql_cmd.ts](src/monitor/builtin/collectors/file_sql_cmd.ts).
@@ -41,15 +42,15 @@ Every tool-call decision, LLM audit verdict, and execution result is appended to
 
 ### Daily ops capabilities
 
-| Ops need | How | Code |
-|---|---|---|
-| **Inspect** (disk/mem/cpu/net/service/proc/logs) | Read-only `inspect_*` tools, auto-execute, no confirm | [src/tools/inspect.ts](src/tools/inspect.ts) |
-| **Monitor** (OS metrics, logs, DB, commands) | Scheduled daemon + pluggable collectors | [src/monitor/](src/monitor/) |
-| **Alert** (Feishu/DingTalk/webhook/email…) | Pluggable notifiers with signing | [src/monitor/builtin/notifiers/](src/monitor/builtin/notifiers/) |
-| **Execute** (commands/scripts) | `bash` (guarded + `pipefail`/`timeout` rewrite) and `run_script` (lint + dry-run) | [src/safety/extension.ts](src/safety/extension.ts) · [src/tools/script.ts](src/tools/script.ts) |
-| **Script** (generate/bash/python) | `run_script` with syntax check + dry-run preview | [src/tools/script.ts](src/tools/script.ts) |
-| **Security review** | Read-only inspection + `--llm_audit` semantic review of any write | [src/safety/](src/safety/) · [src/audit/llm.ts](src/audit/llm.ts) |
-| **Recover** | Non-destructive playbooks via skills; destructive only via confirmed `controlled_delete` | [skills/](skills/) · [src/tools/destructive.ts](src/tools/destructive.ts) |
+| Ops need                                         | How                                                                                      | Code                                                                                            |
+| ------------------------------------------------ | ---------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| **Inspect** (disk/mem/cpu/net/service/proc/logs) | Read-only `inspect_*` tools, auto-execute, no confirm                                    | [src/tools/inspect.ts](src/tools/inspect.ts)                                                    |
+| **Monitor** (OS metrics, logs, DB, commands)     | Scheduled daemon + pluggable collectors                                                  | [src/monitor/](src/monitor/)                                                                    |
+| **Alert** (Feishu/DingTalk/webhook/email…)       | Pluggable notifiers with signing                                                         | [src/monitor/builtin/notifiers/](src/monitor/builtin/notifiers/)                                |
+| **Execute** (commands/scripts)                   | `bash` (guarded + `pipefail`/`timeout` rewrite) and `run_script` (lint + dry-run)        | [src/safety/extension.ts](src/safety/extension.ts) · [src/tools/script.ts](src/tools/script.ts) |
+| **Script** (generate/bash/python)                | `run_script` with syntax check + dry-run preview                                         | [src/tools/script.ts](src/tools/script.ts)                                                      |
+| **Security review**                              | Read-only inspection + `--llm_audit` semantic review of any write                        | [src/safety/](src/safety/) · [src/audit/llm.ts](src/audit/llm.ts)                               |
+| **Recover**                                      | Non-destructive playbooks via skills; destructive only via confirmed `controlled_delete` | [skills/](skills/) · [src/tools/destructive.ts](src/tools/destructive.ts)                       |
 
 ### Lightweight by design
 
@@ -67,7 +68,24 @@ Every tool-call decision, LLM audit verdict, and execution result is appended to
 
 ## Install
 
+### Option A: Install from npm (recommended for users)
+
 ```bash
+# Install globally via npm
+npm install -g @xianzongwendao/op-agent
+
+# Or via bun
+bun add -g @xianzongwendao/op-agent
+
+# Or run directly without installing
+npx @xianzongwendao/op-agent
+```
+
+### Option B: Build from source (for developers)
+
+```bash
+git clone https://github.com/liveljack/op_agent.git
+cd op_agent
 bun install
 ```
 
@@ -80,10 +98,10 @@ echo 'DEEPSEEK_API_KEY=sk-xxxxxxxx' > ~/.op_agent/.env
 chmod 600 ~/.op_agent/.env
 
 # 2. Self-test (offline, no LLM call)
-bun run src/index.ts --self-test
+opagent --self-test
 
 # 3. Start the interactive TUI
-bun run src/index.ts
+opagent
 ```
 
 ---
@@ -107,10 +125,10 @@ DEEPSEEK_API_KEY=sk-xxxxxxxx
 
 ### API key
 
-| Variable | Purpose |
-|---|---|
+| Variable           | Purpose                          |
+| ------------------ | -------------------------------- |
 | `DEEPSEEK_API_KEY` | DeepSeek API key (default model) |
-| `OPAGENT_API_KEY` | Generic fallback key |
+| `OPAGENT_API_KEY`  | Generic fallback key             |
 
 ### URL
 
@@ -122,7 +140,17 @@ DEEPSEEK_API_KEY=sk-xxxxxxxx
       "baseUrl": "https://your-endpoint/v1",
       "apiKey": "$YOUR_API_KEY",
       "api": "openai-completions",
-      "models": [{ "id": "gpt-4o", "name": "GPT-4o", "reasoning": false, "input": ["text"], "contextWindow": 128000, "maxTokens": 4096, "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 } }]
+      "models": [
+        {
+          "id": "gpt-4o",
+          "name": "GPT-4o",
+          "reasoning": false,
+          "input": ["text"],
+          "contextWindow": 128000,
+          "maxTokens": 4096,
+          "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 }
+        }
+      ]
     }
   }
   ```
@@ -163,17 +191,17 @@ opagent monitor new-notifier <name>  # scaffold a custom notifier
 
 ### Flags & env vars
 
-| Flag | Env | Default | Description |
-|---|---|---|---|
-| `--model` | `OPAGENT_MODEL` | `deepseek/deepseek-v4-flash` | Model `provider/model` |
-| `--allow-write` | `OPAGENT_ALLOW_WRITE=1` | off | Enable writes (confirmed) |
-| `--allow-destructive` | `OPAGENT_ALLOW_DESTRUCTIVE=1` | off | Enable destructive ops (confirmed + reason) |
-| `--llm_audit` | `OPAGENT_LLM_AUDIT=1` | off | LLM semantic audit |
-| `--cwd` | — | `process.cwd()` | Working directory |
-| `-p, --print` | — | — | Headless one-shot |
-| — | `OPAGENT_DIR` | `~/.op_agent` | Config directory |
-| — | `OPAGENT_WRITE_PATHS` | `<cwd>/workspace` | Write allowlist (colon-separated) |
-| — | `OPAGENT_AUDIT_DB` | `~/.op_agent/audit.db` | Audit DB path |
+| Flag                  | Env                           | Default                      | Description                                 |
+| --------------------- | ----------------------------- | ---------------------------- | ------------------------------------------- |
+| `--model`             | `OPAGENT_MODEL`               | `deepseek/deepseek-v4-flash` | Model `provider/model`                      |
+| `--allow-write`       | `OPAGENT_ALLOW_WRITE=1`       | off                          | Enable writes (confirmed)                   |
+| `--allow-destructive` | `OPAGENT_ALLOW_DESTRUCTIVE=1` | off                          | Enable destructive ops (confirmed + reason) |
+| `--llm_audit`         | `OPAGENT_LLM_AUDIT=1`         | off                          | LLM semantic audit                          |
+| `--cwd`               | —                             | `process.cwd()`              | Working directory                           |
+| `-p, --print`         | —                             | —                            | Headless one-shot                           |
+| —                     | `OPAGENT_DIR`                 | `~/.op_agent`                | Config directory                            |
+| —                     | `OPAGENT_WRITE_PATHS`         | `<cwd>/workspace`            | Write allowlist (colon-separated)           |
+| —                     | `OPAGENT_AUDIT_DB`            | `~/.op_agent/audit.db`       | Audit DB path                               |
 
 ---
 
@@ -210,6 +238,7 @@ opagent monitor          # scheduled collection → condition eval → alert →
 ```
 
 Config files (auto-generated by the TUI tools, or hand-written):
+
 - `~/.op_agent/monitors.yaml`
 - `~/.op_agent/notifiers.yaml`
 
@@ -220,14 +249,14 @@ Example:
 notifiers:
   - id: feishu-ops
     type: feishu
-    params: { webhook_url: "https://open.feishu.cn/...", secret: "${FEISHU_SECRET}" }
+    params: { webhook_url: 'https://open.feishu.cn/...', secret: '${FEISHU_SECRET}' }
 
 # monitors.yaml
 monitors:
   - id: disk-root
     collector: system.disk
-    params: { mount: "/" }
-    when: { field: usage_percent, op: ">", value: 85 }
+    params: { mount: '/' }
+    when: { field: usage_percent, op: '>', value: 85 }
     for: 2m
     severity: warn
     interval: 60s

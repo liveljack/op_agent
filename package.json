@@ -1,5 +1,5 @@
 {
-  "name": "op-agent",
+  "name": "@xianzongwendao/op-agent",
   "version": "0.1.1",
   "description": "A lightweight Linux operations agent built on the pi coding agent SDK - safety-first, single-process, embedded SQLite, runs on 1c1g servers.",
   "keywords": [
