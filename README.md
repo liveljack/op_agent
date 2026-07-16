@@ -25,6 +25,12 @@ All model-proposed actions pass through a **three-tier defense** before anything
 | 2. LLM semantic (`LlmAuditor`) | Audits writes/scripts for variable indirection, obfuscation, exfiltration, privilege escalation. Merged **strict** — LLM can only escalate, never downgrade. Fail-safe: on error, escalates to human confirm.                                                                           | [src/audit/llm.ts](src/audit/llm.ts)                                                            |
 | 3. Confirm gate + audit        | Writes/destructive require interactive `y/N`; no UI (print mode) → fail-closed block. Every decision and result goes to the hash-chained audit log.                                                                                                                                     | [src/safety/extension.ts](src/safety/extension.ts) · [src/audit/store.ts](src/audit/store.ts)   |
 
+### Safety in Action
+
+|                Default (Blocked)                |                 With `--allow-write` (Confirm)                  |
+| :---------------------------------------------: | :-------------------------------------------------------------: |
+| ![Blocked Write](docs/images/blocked_write.png) | ![Allowed Write Confirm](docs/images/allowed_write_confirm.png) |
+
 **Guarantees:**
 
 - Deleting tools (`controlled_delete`, `db_mutate`) are **not registered by default** — only with `--allow-destructive`, and still require confirmation + reason ([src/tools/destructive.ts](src/tools/destructive.ts)).

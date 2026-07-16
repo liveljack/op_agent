@@ -1,6 +1,6 @@
 {
   "name": "@xianzongwendao/op-agent",
-  "version": "0.1.1",
+  "version": "0.1.3",
   "description": "A lightweight Linux operations agent built on the pi coding agent SDK - safety-first, single-process, embedded SQLite, runs on 1c1g servers.",
   "keywords": [
     "linux",
@@ -39,7 +39,6 @@
   },
   "files": [
     "dist/",
-    "src/",
     "skills/",
     "README.md",
     "README_cn.md",
@@ -51,7 +50,8 @@
   "scripts": {
     "start": "bun run src/index.ts",
     "dev": "bun --hot run src/index.ts",
-    "build": "bun build src/index.ts --target=bun --outfile=dist/index.js && bun run build:types",
+    "build": "bun build src/index.ts --target=bun --outfile=dist/index.js && bun run build:assets && bun run build:types",
+    "build:assets": "mkdir -p dist/core && cp -r node_modules/@earendil-works/pi-coding-agent/dist/modes dist/modes && cp -r node_modules/@earendil-works/pi-coding-agent/dist/core/export-html dist/core/export-html",
     "build:types": "tsc --declaration --emitDeclarationOnly --outDir dist",
     "prepublishOnly": "bun run build",
     "release": "npm publish --registry https://registry.npmjs.org/ --access public",
