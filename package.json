@@ -1,15 +1,61 @@
 {
-  "name": "op_agent",
-  "private": true,
-  "version": "0.1.0",
-  "type": "module",
-  "description": "轻量化 Linux 运维 Agent —— 基于 pi coding agent SDK",
-  "bin": {
-    "opagent": "./src/index.ts"
+  "name": "op-agent",
+  "version": "0.1.1",
+  "description": "A lightweight Linux operations agent built on the pi coding agent SDK - safety-first, single-process, embedded SQLite, runs on 1c1g servers.",
+  "keywords": [
+    "linux",
+    "ops",
+    "operations",
+    "agent",
+    "cli",
+    "devops",
+    "sre",
+    "monitoring",
+    "audit",
+    "safety",
+    "pi-coding-agent"
+  ],
+  "license": "Apache-2.0",
+  "author": "OpAgent Contributors",
+  "homepage": "https://github.com/liveljack/op_agent/blob/main/README.md",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/liveljack/op_agent.git"
   },
+  "bugs": {
+    "url": "https://github.com/liveljack/op_agent/issues"
+  },
+  "engines": {
+    "bun": ">=1.1.0",
+    "node": ">=22"
+  },
+  "type": "module",
+  "private": false,
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "opagent": "./dist/index.js"
+  },
+  "files": [
+    "dist/",
+    "src/",
+    "skills/",
+    "README.md",
+    "README_cn.md",
+    "LICENSE",
+    "design.md",
+    "monitor_design.md",
+    "coding_desc.md"
+  ],
   "scripts": {
     "start": "bun run src/index.ts",
     "dev": "bun --hot run src/index.ts",
+    "build": "bun build src/index.ts --target=bun --outfile=dist/index.js && bun run build:types",
+    "build:types": "tsc --declaration --emitDeclarationOnly --outDir dist",
+    "prepublishOnly": "bun run build",
+    "release": "npm publish --registry https://registry.npmjs.org/ --access public",
+    "release:dry": "npm publish --dry-run --registry https://registry.npmjs.org/",
     "test": "bun test",
     "typecheck": "tsc --noEmit"
   },
@@ -19,9 +65,15 @@
     "yaml": "^2.9.0"
   },
   "devDependencies": {
-    "@types/bun": "latest"
+    "@types/bun": "latest",
+    "typescript": "^5"
   },
   "peerDependencies": {
     "typescript": "^5"
+  },
+  "peerDependenciesMeta": {
+    "typescript": {
+      "optional": true
+    }
   }
 }

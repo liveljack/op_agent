@@ -113,7 +113,7 @@ const HELP = `OpAgent —— 轻量化 Linux 运维 Agent
 环境变量:
   DEEPSEEK_API_KEY          DeepSeek API 密钥
   OPAGENT_MODEL             模型 provider/model
-  OPAGENT_DIR               配置目录（默认 ~/.opagent）
+  OPAGENT_DIR               配置目录（默认 ~/.op_agent）
   OPAGENT_ALLOW_WRITE=1     等同 --allow-write
   OPAGENT_ALLOW_DESTRUCTIVE=1
   OPAGENT_LLM_AUDIT=1       等同 --llm_audit
