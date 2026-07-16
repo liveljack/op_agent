@@ -33,6 +33,15 @@ import { createDestructiveTools } from "./tools/destructive.ts";
 import { createScriptTools } from "./tools/script.ts";
 import { LlmAuditor } from "./audit/llm.ts";
 import { loadBuiltinSkills } from "./skills/index.ts";
+import { createRegistry } from "./monitor/registry.ts";
+import { createMonitorTools } from "./monitor/tools.ts";
+import { MonitorDaemon } from "./monitor/daemon.ts";
+import {
+  generateCollectorScaffold,
+  generateNotifierScaffold,
+} from "./monitor/scaffold.ts";
+import { hostname } from "node:os";
+import { join } from "node:path";
 
 interface CliArgs {
   allowWrite?: boolean;
@@ -120,7 +129,7 @@ const HELP = `OpAgent —— 轻量化 Linux 运维 Agent
 `;
 
 /** 构建进程级共享对象：config / guard / audit / 扩展 / 工具 / 技能 */
-function buildShared(args: CliArgs) {
+async function buildShared(args: CliArgs) {
   const config = loadConfig({
     allowWrite: args.allowWrite,
     allowDestructive: args.allowDestructive,
@@ -162,13 +171,29 @@ function buildShared(args: CliArgs) {
     { name: "opagent-audit", factory: createAuditExtension(audit) },
   ];
 
-  const customTools = [...createInspectTools(guard), ...createScriptTools()];
+  // 监控插件注册表 + monitor_* 工具
+  const monitorDbPath = join(config.agentDir, "monitor.db");
+  const registry = await createRegistry(config.agentDir);
+  const monitorTools = createMonitorTools({
+    registry,
+    agentDir: config.agentDir,
+    dbPath: monitorDbPath,
+    guard,
+    allowWrite: config.allowWrite,
+    host: hostname(),
+  });
+
+  const customTools = [
+    ...createInspectTools(guard),
+    ...createScriptTools(),
+    ...monitorTools,
+  ];
   if (config.allowDestructive) {
     customTools.push(...createDestructiveTools(guard));
   }
 
   const builtinSkills = loadBuiltinSkills(config.skillsDir);
-  return { config, guard, audit, auditor, extensions, customTools, builtinSkills };
+  return { config, guard, audit, auditor, registry, monitorDbPath, extensions, customTools, builtinSkills };
 }
 
 /** 解析模型；失败则返回 undefined 交由 pi 兜底选第一个可用 */
@@ -202,7 +227,7 @@ function buildToolAllowlist(config: OpAgentConfig, customToolNames: string[]): s
   return tools;
 }
 
-function buildRuntimeFactory(shared: ReturnType<typeof buildShared>) {
+function buildRuntimeFactory(shared: Awaited<ReturnType<typeof buildShared>>) {
   const { config, extensions, customTools, builtinSkills } = shared;
   const authStorage = AuthStorage.create(`${config.agentDir}/auth.json`);
   const modelRegistry = ModelRegistry.create(
@@ -245,7 +270,7 @@ function buildRuntimeFactory(shared: ReturnType<typeof buildShared>) {
   };
 }
 
-function selfTest(shared: ReturnType<typeof buildShared>) {
+function selfTest(shared: Awaited<ReturnType<typeof buildShared>>) {
   const { config, guard, audit, customTools, builtinSkills } = shared;
   console.log("=== OpAgent 自检 ===");
   console.log(`工作目录   : ${config.cwd}`);
@@ -277,13 +302,20 @@ function selfTest(shared: ReturnType<typeof buildShared>) {
 }
 
 async function main() {
-  const args = parseArgs(process.argv.slice(2));
+  const argv = process.argv.slice(2);
+
+  // monitor 子命令：opagent monitor [new-collector|new-notifier <name>]
+  if (argv[0] === "monitor") {
+    return runMonitorSubcommand(argv.slice(1));
+  }
+
+  const args = parseArgs(argv);
   if (args.help) {
     console.log(HELP);
     return;
   }
 
-  const shared = buildShared(args);
+  const shared = await buildShared(args);
 
   if (args.selfTest) {
     selfTest(shared);
@@ -315,6 +347,49 @@ async function main() {
     initialMessages: [],
   } as any);
   await mode.run();
+}
+
+/** opagent monitor 子命令 */
+async function runMonitorSubcommand(args: string[]) {
+  const sub = args[0];
+  const config = loadConfig({});
+  if (sub === "new-collector") {
+    const name = args[1];
+    if (!name) return console.error("用法: opagent monitor new-collector <name>");
+    console.log(generateCollectorScaffold(config.agentDir, name));
+    return;
+  }
+  if (sub === "new-notifier") {
+    const name = args[1];
+    if (!name) return console.error("用法: opagent monitor new-notifier <name>");
+    console.log(generateNotifierScaffold(config.agentDir, name));
+    return;
+  }
+  // 默认：启动守护进程
+  const registry = await createRegistry(config.agentDir);
+  const guard = new PolicyGuard({
+    allowWrite: false,
+    allowDestructive: false,
+    writePaths: [],
+    cwd: config.cwd,
+    home: config.home,
+  });
+  const daemon = new MonitorDaemon({
+    registry,
+    agentDir: config.agentDir,
+    dbPath: join(config.agentDir, "monitor.db"),
+    guard,
+  });
+  await daemon.start();
+  // 保持进程运行
+  process.on("SIGINT", () => {
+    daemon.stop();
+    process.exit(0);
+  });
+  process.on("SIGTERM", () => {
+    daemon.stop();
+    process.exit(0);
+  });
 }
 
 main().catch((e) => {
