@@ -26,6 +26,7 @@ import { loadConfig, type OpAgentConfig } from "./config.ts";
 import { buildSystemPrompt } from "./prompt.ts";
 import { PolicyGuard } from "./safety/policy.ts";
 import { createSafetyExtension } from "./safety/extension.ts";
+import { SandboxRunner } from "./safety/sandbox.ts";
 import { createAuditExtension } from "./audit/extension.ts";
 import { createAuditStore } from "./audit/store.ts";
 import { createInspectTools } from "./tools/inspect.ts";
@@ -99,15 +100,20 @@ const HELP = `OpAgent —— 轻量化 Linux 运维 Agent
 用法:
   opagent [选项]
 
+默认只读模式：可读取/检查任意内容，可写 scratch 临时区（/tmp，免确认，用于
+生成脚本与辅助文档）与 /dev/null 丢弃输出；其余任何写入、系统环境变更
+（服务/进程/包管理/挂载/crontab）、数据源写（SQL 与 redis/mongo 等）一律阻断。
+run_script 生成的脚本在 OS 沙箱中执行（仅 /tmp 与 /dev/null 可写，读取不受限）。
+
 选项:
-  --allow-write             开启写操作（仍逐次确认）
+  --allow-write             开启白名单写操作（仍逐次确认；scratch 区始终免确认）
   --allow-destructive       开启破坏性操作通道（仍需二次确认 + 理由）
   --llm_audit               启用 LLM 语义审计：写/破坏性命令与脚本额外过 LLM 审计
                            （与 --allow-write/--allow-destructive 配合定安全等级）
   --model <provider/model>  覆盖模型，默认 deepseek/deepseek-v4-flash
   --cwd <path>              工作目录
   -p, --print "<prompt>"    headless 单次执行（不进 TUI）
-  --self-test               自检：加载配置/策略/工具/技能并打印摘要
+  --self-test               自检：加载配置/策略/沙箱/工具/技能并打印摘要
   -h, --help                显示帮助
 
 环境变量:
@@ -121,6 +127,9 @@ const HELP = `OpAgent —— 轻量化 Linux 运维 Agent
   OPAGENT_AUDIT_MODEL       LLM 审计模型（默认 deepseek-chat）
   OPAGENT_AUDIT_API_KEY     LLM 审计 key（默认同 DEEPSEEK_API_KEY）
   OPAGENT_WRITE_PATHS       写白名单（冒号分隔）
+  OPAGENT_SCRATCH_PATHS     scratch 临时区（冒号分隔，默认 /tmp；只应指向真正的临时目录）
+  OPAGENT_SANDBOX           run_script OS 沙箱策略：auto（默认，可用则沙箱、不可用回退）
+                           / require（不可用则拒绝执行）/ off
 
 示例:
   DEEPSEEK_API_KEY=sk-... opagent
@@ -128,7 +137,7 @@ const HELP = `OpAgent —— 轻量化 Linux 运维 Agent
   opagent --self-test
 `;
 
-/** 构建进程级共享对象：config / guard / audit / 扩展 / 工具 / 技能 */
+/** 构建进程级共享对象：config / guard / audit / 沙箱 / 扩展 / 工具 / 技能 */
 async function buildShared(args: CliArgs) {
   const config = loadConfig({
     allowWrite: args.allowWrite,
@@ -143,8 +152,17 @@ async function buildShared(args: CliArgs) {
     writePaths: config.writePaths,
     cwd: config.cwd,
     home: config.home,
+    scratchPaths: config.scratchPaths,
   });
   const audit = createAuditStore(config.auditDbPath);
+
+  // OS 沙箱：run_script 默认模式下进程级写隔离（仅 scratch 区与 /dev/null 可写）
+  const sandbox = new SandboxRunner({
+    policy: config.sandbox,
+    allowWrite: config.allowWrite,
+    scratchPaths: config.scratchPaths,
+    audit,
+  });
 
   // LLM 审计器：仅 --llm_audit 启用且配置了 key 时生效
   const auditor = config.llmAudit
@@ -166,7 +184,14 @@ async function buildShared(args: CliArgs) {
   const extensions: InlineExtension[] = [
     {
       name: "opagent-safety",
-      factory: createSafetyExtension({ guard, audit, auditor, safetyLevel }),
+      factory: createSafetyExtension({
+        guard,
+        audit,
+        auditor,
+        safetyLevel,
+        allowWrite: config.allowWrite,
+        sandbox,
+      }),
     },
     { name: "opagent-audit", factory: createAuditExtension(audit) },
   ];
@@ -185,7 +210,7 @@ async function buildShared(args: CliArgs) {
 
   const customTools = [
     ...createInspectTools(guard),
-    ...createScriptTools(),
+    ...createScriptTools({ sandbox, scratchPaths: config.scratchPaths }),
     ...monitorTools,
   ];
   if (config.allowDestructive) {
@@ -193,7 +218,7 @@ async function buildShared(args: CliArgs) {
   }
 
   const builtinSkills = loadBuiltinSkills(config.skillsDir);
-  return { config, guard, audit, auditor, registry, monitorDbPath, extensions, customTools, builtinSkills };
+  return { config, guard, audit, sandbox, auditor, registry, monitorDbPath, extensions, customTools, builtinSkills };
 }
 
 /** 解析模型；失败则返回 undefined 交由 pi 兜底选第一个可用 */
@@ -220,10 +245,9 @@ function resolveModel(config: OpAgentConfig, authStorage: AuthStorage, modelRegi
   return res.model;
 }
 
-/** 构建工具允许列表 */
+/** 构建工具允许列表：write/edit 默认暴露，路径约束由 PolicyGuard 限制在 scratch 区 */
 function buildToolAllowlist(config: OpAgentConfig, customToolNames: string[]): string[] {
-  const tools = ["read", "grep", "find", "ls", "bash", ...customToolNames];
-  if (config.allowWrite) tools.push("write", "edit");
+  const tools = ["read", "grep", "find", "ls", "bash", "write", "edit", ...customToolNames];
   return tools;
 }
 
@@ -270,8 +294,9 @@ function buildRuntimeFactory(shared: Awaited<ReturnType<typeof buildShared>>) {
   };
 }
 
-function selfTest(shared: Awaited<ReturnType<typeof buildShared>>) {
-  const { config, guard, audit, customTools, builtinSkills } = shared;
+async function selfTest(shared: Awaited<ReturnType<typeof buildShared>>) {
+  const { config, guard, audit, sandbox, customTools, builtinSkills } = shared;
+  const sandboxInfo = await sandbox.info();
   console.log("=== OpAgent 自检 ===");
   console.log(`工作目录   : ${config.cwd}`);
   console.log(`配置目录   : ${config.agentDir}`);
@@ -281,20 +306,28 @@ function selfTest(shared: Awaited<ReturnType<typeof buildShared>>) {
   console.log(`允许破坏性 : ${config.allowDestructive}`);
   console.log(`LLM审计    : ${config.llmAudit ? `启用 (${config.auditModel}${shared.auditor?.enabled ? "" : ", 无key跳过"})` : "关闭"}`);
   console.log(`写白名单   : ${config.writePaths.join(", ") || "（空）"}`);
+  console.log(`scratch 区 : ${config.scratchPaths.join(", ")}`);
+  console.log(`OS 沙箱    : ${sandboxInfo.kind}${sandbox.shouldSandbox() ? "（run_script 启用）" : "（关闭）"} — ${sandboxInfo.detail}`);
   console.log(`审计 DB    : ${config.auditDbPath}`);
   console.log(`工具       : ${customTools.map((t: any) => t.name).join(", ")}`);
   console.log(`技能       : ${builtinSkills.map((s) => s.name).join(", ") || "（无）"}`);
   console.log("\n=== 策略抽测 ===");
   const cases = [
     "df -h",
+    "df -h > /dev/null 2>&1",
+    "echo x > /tmp/a.sh",
     "rm -rf /tmp/x",
     "systemctl restart nginx",
+    "apt install -y curl",
+    "psql -c \"INSERT INTO t VALUES(1)\"",
+    "redis-cli SET k v",
+    "bash /tmp/x.sh",
     "cat /etc/shadow",
     "echo hi > /etc/passwd",
   ];
   for (const c of cases) {
     const d = guard.checkBash(c);
-    const tag = d.allow ? (d.requireConfirm ? "CONFIRM" : "READ") : "BLOCKED";
+    const tag = d.allow ? (d.requireConfirm ? "CONFIRM" : d.zone === "scratch" ? "SCRATCH" : "READ") : "BLOCKED";
     console.log(`  [${tag}] ${c}  ${d.reason ? "— " + d.reason : ""}`);
   }
   console.log(`\n审计链校验: ${audit.verify().ok ? "OK" : "损坏"}`);
@@ -318,7 +351,7 @@ async function main() {
   const shared = await buildShared(args);
 
   if (args.selfTest) {
-    selfTest(shared);
+    await selfTest(shared);
     return;
   }
 
@@ -373,6 +406,7 @@ async function runMonitorSubcommand(args: string[]) {
     writePaths: [],
     cwd: config.cwd,
     home: config.home,
+    scratchPaths: config.scratchPaths,
   });
   const daemon = new MonitorDaemon({
     registry,

@@ -17,13 +17,14 @@ OpAgent is purpose-built for **lightweight Linux operations**: a single Bun proc
 
 ### Safety-first design
 
-All model-proposed actions pass through a **three-tier defense** before anything executes. Interception happens inside pi's `tool_call` hook (before execution), so the model cannot bypass it.
+All model-proposed actions pass through a **four-tier defense** before anything executes. Interception happens inside pi's `tool_call` hook (before execution), so the model cannot bypass it.
 
 | Tier                           | What it does                                                                                                                                                                                                                                                                            | Code                                                                                            |
 | ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
-| 1. Pattern (`PolicyGuard`)     | Fast deterministic block of destructive commands (`rm -rf`, `mkfs`, `find -delete`, `\| sh`, `eval`, `base64\|sh`, interpreter deletion), destructive SQL (`DROP`/`TRUNCATE`/`DELETE` without `WHERE`), and protected paths (`/etc/shadow`, `~/.ssh`, `/proc`, `/sys`, `/dev`, `/boot`) | [src/safety/policy.ts](src/safety/policy.ts) · [src/safety/patterns.ts](src/safety/patterns.ts) |
-| 2. LLM semantic (`LlmAuditor`) | Audits writes/scripts for variable indirection, obfuscation, exfiltration, privilege escalation. Merged **strict** — LLM can only escalate, never downgrade. Fail-safe: on error, escalates to human confirm.                                                                           | [src/audit/llm.ts](src/audit/llm.ts)                                                            |
+| 1. Pattern (`PolicyGuard`)     | Fast deterministic block of destructive commands (`rm -rf`, `mkfs`, `find -delete`, `\| sh`, `eval`, `base64\|sh`, interpreter deletion), destructive SQL (`DROP`/`TRUNCATE`/`DELETE` without `WHERE`), and protected paths (`/etc/shadow`, `~/.ssh`, `/proc`, `/sys`, `/dev`, `/boot`). Classifies file writes by zone: **scratch** (`/tmp`, no confirm), **discard** (`/dev/null`, treated as read), everything else blocked by default. System-state changes (services/processes/packages/mounts/crontab) and **data-source writes** (write SQL + `redis-cli`/`mongosh` write commands) are never scratch-exempt. Symlink escapes out of scratch are caught via `realpath` resolution. | [src/safety/policy.ts](src/safety/policy.ts) · [src/safety/patterns.ts](src/safety/patterns.ts) |
+| 2. LLM semantic (`LlmAuditor`) | Audits writes/scripts for variable indirection, obfuscation, exfiltration, privilege escalation. Merged **strict** — LLM can only escalate, never downgrade. Fail-safe: on error, escalates to human confirm. Skipped for scratch/discard zones (no-confirm promise).                    | [src/audit/llm.ts](src/audit/llm.ts)                                                            |
 | 3. Confirm gate + audit        | Writes/destructive require interactive `y/N`; no UI (print mode) → fail-closed block. Every decision and result goes to the hash-chained audit log.                                                                                                                                     | [src/safety/extension.ts](src/safety/extension.ts) · [src/audit/store.ts](src/audit/store.ts)   |
+| 4. OS sandbox (`SandboxRunner`) | `run_script` executes generated scripts inside an OS sandbox (macOS `sandbox-exec` / Linux `bwrap`): writes are confined to the scratch zone + `/dev/null` **at the process level**; reads/exec/network stay open (read-only analysis is the core use case). Auto-detects availability: `auto` (default) falls back to pattern layer with an audit warning, `require` refuses to run without a sandbox. | [src/safety/sandbox.ts](src/safety/sandbox.ts) · [src/tools/script.ts](src/tools/script.ts)     |
 
 ### Safety in Action
 
@@ -34,9 +35,11 @@ All model-proposed actions pass through a **three-tier defense** before anything
 **Guarantees:**
 
 - Deleting tools (`controlled_delete`, `db_mutate`) are **not registered by default** — only with `--allow-destructive`, and still require confirmation + reason ([src/tools/destructive.ts](src/tools/destructive.ts)).
-- `write`/`edit` tools are off by default — need `--allow-write` + per-action confirm.
+- **Default read-only mode can only write the scratch zone** (`/tmp`, no confirm, for script/doc generation) and `/dev/null` (output discard, treated as read). All other file writes, system-state changes (services/processes/packages/mounts/crontab), and data-source writes (SQL `INSERT`/`UPDATE`/`CREATE`/`ALTER`, `redis-cli`/`mongosh` write commands) are blocked; read queries are unaffected.
+- `write`/`edit` tools are available by default but `PolicyGuard` confines them to the scratch zone (configurable via `OPAGENT_SCRATCH_PATHS`); whitelist writes still need `--allow-write` + per-action confirm.
+- Scratch-zone scripts must go through `run_script` (direct `bash /tmp/x.sh` is blocked — content is unverified); inside the sandbox the write boundary is enforced by the OS.
 - Collectors that run commands/SQL route through `PolicyGuard` too (defense in depth) — [src/monitor/builtin/collectors/file_sql_cmd.ts](src/monitor/builtin/collectors/file_sql_cmd.ts).
-- Generated scripts go through `run_script`: `bash -n` syntax check → `dry_run` preview → policy + LLM audit → confirm → execute ([src/tools/script.ts](src/tools/script.ts)).
+- Generated scripts go through `run_script`: `bash -n` syntax check → `dry_run` preview → policy + LLM audit → confirm → OS-sandboxed execute ([src/tools/script.ts](src/tools/script.ts)).
 
 ### Audit chain
 
@@ -207,19 +210,24 @@ opagent monitor new-notifier <name>  # scaffold a custom notifier
 | `-p, --print`         | —                             | —                            | Headless one-shot                           |
 | —                     | `OPAGENT_DIR`                 | `~/.op_agent`                | Config directory                            |
 | —                     | `OPAGENT_WRITE_PATHS`         | `<cwd>/workspace`            | Write allowlist (colon-separated)           |
+| —                     | `OPAGENT_SCRATCH_PATHS`       | `/tmp`                       | Scratch zone, no-confirm writable (colon-separated; point only at real temp dirs) |
+| —                     | `OPAGENT_SANDBOX`             | `auto`                       | `run_script` OS sandbox: `auto` (use if available, fallback + audit warn) / `require` (refuse without) / `off` |
 | —                     | `OPAGENT_AUDIT_DB`            | `~/.op_agent/audit.db`       | Audit DB path                               |
 
 ---
 
-## Safety model (three tiers)
+## Safety model (four tiers)
 
-1. **Pattern layer** (`PolicyGuard`): fast, deterministic. Blocks `rm -rf`, `mkfs`, `find -delete`, `| sh`, `eval`, `base64|sh`, interpreter deletion (`python os.remove`, `perl unlink`, ...), destructive SQL (`DROP`/`TRUNCATE`/`DELETE` without `WHERE`), and protected paths (`/etc/shadow`, `~/.ssh`, `/proc`, `/sys`, `/dev`, `/boot`).
-2. **LLM layer** (`LlmAuditor`, `--llm_audit`): semantic audit of writes/scripts — catches variable indirection, obfuscation, exfiltration, privilege escalation. Merged strict (LLM can only escalate, never downgrade). Fail-safe: on error, escalates to human confirm.
+1. **Pattern layer** (`PolicyGuard`): fast, deterministic. Blocks `rm -rf`, `mkfs`, `find -delete`, `| sh`, `eval`, `base64|sh`, interpreter deletion (`python os.remove`, `perl unlink`, ...), interpreter writes (`python open('w')`, `node writeFileSync`), destructive SQL (`DROP`/`TRUNCATE`/`DELETE` without `WHERE`), **write SQL** (`INSERT`/`UPDATE`/`CREATE`/`ALTER`/`GRANT`/`REPLACE`/`MERGE`), **NoSQL data-source writes** (`redis-cli SET/DEL/FLUSHALL`, `mongosh insertOne/updateOne/deleteOne/drop`), and protected paths (`/etc/shadow`, `~/.ssh`, `/proc`, `/sys`, `/dev`, `/boot`). File writes are zoned: scratch (`/tmp`) passes without confirm, `/dev/null` discard counts as read, everything else needs `--allow-write`. System-state writes (services/processes/packages/mounts/crontab) are never scratch-exempt. Symlink escapes out of scratch and `..` traversal are resolved/blocked.
+2. **LLM layer** (`LlmAuditor`, `--llm_audit`): semantic audit of writes/scripts — catches variable indirection, obfuscation, exfiltration, privilege escalation. Merged strict (LLM can only escalate, never downgrade). Fail-safe: on error, escalates to human confirm. Skipped for scratch/discard zones (their no-confirm promise must not be broken by fail-safe confirmation).
 3. **Confirm gate + audit**: writes/destructive require interactive `y/N`; every decision and execution result goes to the hash-chained audit log.
+4. **OS sandbox** (`SandboxRunner`, default in read-only mode): `run_script` scripts execute inside `sandbox-exec` (macOS) / `bwrap` (Linux) — process-level write confinement to the scratch zone + `/dev/null`; reads, exec, and networking stay open. `OPAGENT_SANDBOX=auto|require|off` controls availability handling; every sandboxed run, fallback, and refusal is audited. Direct execution of scratch scripts via `bash /tmp/x.sh` is blocked at tier 1 — scripts must go through `run_script`.
 
 Safety level binds to flags: `--allow-write` / `--allow-destructive` define what the LLM auditor may permit. The `/audit list` and `/audit verify` slash commands query and verify the chain.
 
 Deleting tools (`controlled_delete`, `db_mutate`) are **not registered by default** — only with `--allow-destructive`, and still require confirmation + reason.
+
+Known residual surface (documented, mitigated by tiers 2–4): `find -exec`, binary indirect execution, dynamically constructed write paths inside plain `bash` tool calls (not `run_script`); pattern layer is best-effort there, the sandbox path is enforced.
 
 ---
 

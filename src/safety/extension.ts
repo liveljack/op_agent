@@ -2,7 +2,8 @@
  * opagent-safety 扩展
  *
  * 在 pi 的 tool_call / user_bash 钩子中拦截所有工具调用，过 PolicyGuard：
- * - 破坏性 / 写操作：阻断或要求交互确认
+ * - 破坏性 / 系统写 / 数据源写：阻断或要求交互确认
+ * - scratch（/tmp）与 /dev/null 丢弃：放行免确认，审计留痕
  * - 硬保护路径：永远阻断
  * - 命令改写：注入 set -o pipefail 与默认 timeout，防资源耗尽
  * 拦截发生在工具执行前（pi 内核层），模型无法绕过。
@@ -14,6 +15,7 @@ import { isToolCallEventType } from "@earendil-works/pi-coding-agent";
 import type { PolicyGuard, PolicyDecision } from "./policy.ts";
 import type { AuditStore } from "../audit/store.ts";
 import { mergeDecisions, type LlmAuditor, type SafetyLevel } from "../audit/llm.ts";
+import type { SandboxRunner } from "./sandbox.ts";
 
 export interface SafetyExtensionDeps {
   guard: PolicyGuard;
@@ -22,16 +24,29 @@ export interface SafetyExtensionDeps {
   auditor?: LlmAuditor;
   /** 当前安全等级，传给 LLM 审计器 */
   safetyLevel: SafetyLevel;
+  /** 是否允许写操作（决定 run_script 的 sandboxed 上下文） */
+  allowWrite: boolean;
+  /** OS 沙箱（run_script 沙箱可用时放行 scratch 脚本执行，边界由沙箱强制） */
+  sandbox?: SandboxRunner;
 }
 
 const DEFAULT_BASH_TIMEOUT_MS = 120_000;
 
+/** 剔除 bash/python 的 # 注释行：注释中的 >、rm 等会造成误拦，且注释不可执行 */
+function stripCommentLines(script: string): string {
+  return script
+    .split("\n")
+    .filter((l) => !/^\s*#/.test(l))
+    .join("\n");
+}
+
 export function createSafetyExtension(deps: SafetyExtensionDeps) {
-  const { guard, audit, auditor, safetyLevel } = deps;
+  const { guard, audit, auditor, safetyLevel, allowWrite, sandbox } = deps;
 
   /**
    * 对写/破坏性操作追加 LLM 语义审计，与模式层判定取严合并。
-   * 只读跳过（省延迟）。LLM 审计结果单独入审计链。
+   * read / discard(/dev/null) / scratch(/tmp) 跳过（省延迟，且免确认承诺
+   * 不能被 LLM failSafe 的 requireConfirm 打破——print 模式无 UI 会全断）。
    */
   async function llmAugment(
     decision: PolicyDecision,
@@ -40,6 +55,7 @@ export function createSafetyExtension(deps: SafetyExtensionDeps) {
     context?: string,
   ): Promise<PolicyDecision> {
     if (!auditor || !decision.allow || decision.risk === "read") return decision;
+    if (decision.zone === "discard" || decision.zone === "scratch") return decision;
     const llm = await auditor.audit({ tool, command, context }, safetyLevel);
     audit.append({
       ts: Date.now(),
@@ -110,9 +126,12 @@ export function createSafetyExtension(deps: SafetyExtensionDeps) {
           });
           return undefined;
         }
-        let decision = guard.checkBash(script);
-        // 脚本一律过 LLM 审计（即使模式层判读，脚本语义复杂）
-        if (auditor && decision.allow) {
+        // 沙箱是否实际生效：默认模式且探测可用 → scratch 脚本执行放行（边界由沙箱强制）
+        const sandboxed = sandbox ? await sandbox.sandboxActive() : false;
+        let decision = guard.checkBash(stripCommentLines(script), { sandboxed });
+        // 脚本过 LLM 审计（脚本语义复杂；discard/scratch 区跳过——
+        // 免确认承诺不能被 LLM failSafe 的 requireConfirm 打破）
+        if (auditor && decision.allow && decision.zone !== "discard" && decision.zone !== "scratch") {
           const llm = await auditor.audit(
             { tool: "run_script", command: script },
             safetyLevel,
@@ -191,7 +210,7 @@ export function createSafetyExtension(deps: SafetyExtensionDeps) {
 /**
  * 把 PolicyDecision 解析为 pi 的 tool_call 返回值：
  * - allow + requireConfirm → 交互确认；通过则放行，拒绝则 block
- * - allow + !requireConfirm → 放行
+ * - allow + !requireConfirm → 放行（scratch/discard 免确认决策仍入审计链留痕）
  * - !allow → block + 审计
  */
 async function resolveDecision(
@@ -213,6 +232,19 @@ async function resolveDecision(
     });
     if (ctx.hasUI) ctx.ui.notify(`已阻断：${decision.reason}`, "error");
     return { block: true, reason: decision.reason };
+  }
+
+  // 免确认放行：scratch / discard 区写决策入审计链留痕（普通 read 不记决策行）
+  if (!decision.requireConfirm && decision.zone) {
+    audit.append({
+      ts: Date.now(),
+      tool,
+      input: inputSummary,
+      risk: decision.risk,
+      blocked: false,
+      reason: decision.reason,
+      matches: decision.matches,
+    });
   }
 
   if (decision.requireConfirm) {

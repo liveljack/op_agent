@@ -1,7 +1,7 @@
 import { test, expect, describe, beforeEach, afterEach } from "bun:test";
 import { writeFileSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { loadEnvFile } from "../src/config.ts";
+import { loadEnvFile, loadConfig } from "../src/config.ts";
 
 const TMP = join(import.meta.dir, ".tmp-env");
 
@@ -62,5 +62,44 @@ describe("loadEnvFile —— 优先级与解析", () => {
   test("文件不存在时静默返回", () => {
     const r = loadEnvFile(join(TMP, "nope.env"));
     expect(r.loaded).toBe(0);
+  });
+});
+
+describe("loadConfig —— scratch 临时区与沙箱策略", () => {
+  test("scratchPaths 默认 /tmp", () => {
+    delete process.env.OPAGENT_SCRATCH_PATHS;
+    const c = loadConfig({ cwd: "/data/ws" });
+    expect(c.scratchPaths).toEqual(["/tmp"]);
+  });
+
+  test("OPAGENT_SCRATCH_PATHS 冒号分隔解析（含去空）", () => {
+    process.env.OPAGENT_SCRATCH_PATHS = "/tmp : /var/tmp :";
+    try {
+      const c = loadConfig({ cwd: "/data/ws" });
+      expect(c.scratchPaths).toEqual(["/tmp", "/var/tmp"]);
+    } finally {
+      delete process.env.OPAGENT_SCRATCH_PATHS;
+    }
+  });
+
+  test("sandbox 默认 auto，非法值回退 auto", () => {
+    delete process.env.OPAGENT_SANDBOX;
+    expect(loadConfig({ cwd: "/data/ws" }).sandbox).toBe("auto");
+    process.env.OPAGENT_SANDBOX = "bogus";
+    try {
+      expect(loadConfig({ cwd: "/data/ws" }).sandbox).toBe("auto");
+    } finally {
+      delete process.env.OPAGENT_SANDBOX;
+    }
+  });
+
+  test("sandbox 合法值 require / off 生效，overrides 优先", () => {
+    process.env.OPAGENT_SANDBOX = "require";
+    try {
+      expect(loadConfig({ cwd: "/data/ws" }).sandbox).toBe("require");
+      expect(loadConfig({ cwd: "/data/ws", sandbox: "off" }).sandbox).toBe("off");
+    } finally {
+      delete process.env.OPAGENT_SANDBOX;
+    }
   });
 });

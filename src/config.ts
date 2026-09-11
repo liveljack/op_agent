@@ -30,6 +30,10 @@ export interface OpAgentConfig {
   allowDestructive: boolean;
   /** 写操作路径白名单（绝对路径前缀） */
   writePaths: string[];
+  /** scratch 临时区（默认 ["/tmp"]）：默认只读模式下免确认可写，symlink 不可逃逸出区 */
+  scratchPaths: string[];
+  /** run_script OS 沙箱策略：auto=可用则沙箱、不可用回退；require=不可用拒绝执行；off=关闭 */
+  sandbox: "auto" | "require" | "off";
   /** 审计 DB 路径 */
   auditDbPath: string;
   /** 内置技能目录 */
@@ -112,6 +116,19 @@ export function loadConfig(overrides: Partial<OpAgentConfig> = {}): OpAgentConfi
     ...writePathsEnv.split(":").filter(Boolean),
   ];
 
+  // scratch 临时区：默认 /tmp；只应指向真正的临时目录（OPAGENT_SCRATCH_PATHS 冒号分隔）
+  const scratchPaths =
+    overrides.scratchPaths ??
+    (process.env.OPAGENT_SCRATCH_PATHS ?? "/tmp")
+      .split(":")
+      .map((s) => s.trim())
+      .filter(Boolean);
+
+  // run_script OS 沙箱策略：非法值回退 auto
+  const sandboxEnv = process.env.OPAGENT_SANDBOX;
+  const sandbox =
+    overrides.sandbox ?? (sandboxEnv === "require" || sandboxEnv === "off" ? sandboxEnv : "auto");
+
   return {
     model: overrides.model ?? process.env.OPAGENT_MODEL ?? "deepseek/deepseek-v4-flash",
     apiKey:
@@ -123,6 +140,8 @@ export function loadConfig(overrides: Partial<OpAgentConfig> = {}): OpAgentConfi
     allowWrite,
     allowDestructive,
     writePaths: overrides.writePaths ?? writePaths,
+    scratchPaths,
+    sandbox,
     auditDbPath: overrides.auditDbPath ?? process.env.OPAGENT_AUDIT_DB ?? join(agentDir, "audit.db"),
     skillsDir: overrides.skillsDir ?? join(cwd, "skills"),
     llmAudit: overrides.llmAudit ?? process.env.OPAGENT_LLM_AUDIT === "1",

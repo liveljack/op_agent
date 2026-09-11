@@ -80,9 +80,12 @@ function buildPrompt(input: LlmAuditInput, level: SafetyLevel): { system: string
 判定要点：
 - 删除文件、删除/修改数据库记录、DROP/TRUNCATE/无 WHERE 的 DELETE → destructive
 - 写文件、改配置、重启服务、安装包、执行脚本 → write
+- 写 SQL（INSERT/UPDATE/CREATE/ALTER/GRANT/REPLACE/MERGE）与 NoSQL 数据源写命令
+  （redis-cli SET/DEL/FLUSHALL、mongosh insertOne/updateOne/deleteOne/drop 等）→ write，
+  allowWrite=false 时 block；只读查询（SELECT、redis GET/SCAN、db.find）→ allow, risk=read
 - 变量间接构造（a=rm;$a）、编码混淆（base64|sh）、管道喂 shell（| sh）、数据外泄（nc/curl 上传敏感文件）、提权（sudo/su）→ 一律 block
-- 路径穿越、访问 /etc/shadow ~/.ssh /proc /sys /dev /boot → block
-- 只读检查（df/free/ps/cat 普通文件/systemctl status）→ allow, risk=read
+- 路径穿越（../）、写 /tmp 之外的文件（含经符号链接逃逸出 /tmp）、访问 /etc/shadow ~/.ssh /proc /sys /dev /boot → block
+- 只读检查（df/free/ps/cat 普通文件/systemctl status）、重定向到 /dev/null、写 /tmp 临时区 → allow
 
 只返回严格 JSON，无其它文字：
 {"allow": bool, "risk": "read"|"write"|"destructive", "requireConfirm": bool, "reason": "简短中文理由"}`;

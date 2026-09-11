@@ -1,6 +1,6 @@
 # OpAgent
 
-基于 [pi coding agent SDK](https://pi.dev) 构建的轻量化 Linux 运维 Agent。复用 pi 的 agent loop、工具、会话、技能、TUI 与 provider，在此之上增加安全优先的运维层：三层安全策略、防篡改审计链、运维工具/技能，以及可插拔的监控与报警系统。
+基于 [pi coding agent SDK](https://pi.dev) 构建的轻量化 Linux 运维 Agent。复用 pi 的 agent loop、工具、会话、技能、TUI 与 provider，在此之上增加安全优先的运维层：四层安全策略（模式层 / LLM 语义审计 / 确认门 + 审计链 / run_script OS 沙箱）、防篡改审计链、运维工具/技能，以及可插拔的监控与报警系统。
 
 - **轻量化**：单 Bun 进程 + 内嵌 SQLite，无 Redis/Mongo/Milvus，可在 1c1g 服务器运行。
 - **安全第一**：破坏性操作默认阻断；写操作需确认；全程审计。
@@ -17,26 +17,29 @@ OpAgent 专为**轻量化 Linux 运维**设计：单 Bun 进程 + 内嵌 SQLite�
 
 ### 安全优先设计
 
-所有模型提议的动作在执行前都要经过**三层防御**。拦截发生在 pi 的 `tool_call` 钩子（执行前），模型无法绕过。
+所有模型提议的动作在执行前都要经过**四层防御**。拦截发生在 pi 的 `tool_call` 钩子（执行前），模型无法绕过。
 
 | 层级                          | 作用                                                                                                                                                                                                                                   | 代码                                                                                            |
 | ----------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
-| 1. 模式层（`PolicyGuard`）    | 快速确定地阻断破坏性命令（`rm -rf`、`mkfs`、`find -delete`、`\| sh`、`eval`、`base64\|sh`、解释器删除）、危险 SQL（`DROP`/`TRUNCATE`/无 `WHERE` 的 `DELETE`）、硬保护路径（`/etc/shadow`、`~/.ssh`、`/proc`、`/sys`、`/dev`、`/boot`） | [src/safety/policy.ts](src/safety/policy.ts) · [src/safety/patterns.ts](src/safety/patterns.ts) |
-| 2. LLM 语义层（`LlmAuditor`） | 审计写/脚本的变量间接、混淆、外泄、提权。取严合并——LLM 只能升级，不能降级。fail-safe：异常时升级为人工确认。                                                                                                                           | [src/audit/llm.ts](src/audit/llm.ts)                                                            |
+| 1. 模式层（`PolicyGuard`）    | 快速确定地阻断破坏性命令（`rm -rf`、`mkfs`、`find -delete`、`\| sh`、`eval`、`base64\|sh`、解释器删除与解释器写文件 `python open('w')`）、危险 SQL（`DROP`/`TRUNCATE`/无 `WHERE` 的 `DELETE`）、**写 SQL**（`INSERT`/`UPDATE`/`CREATE`/`ALTER`/`GRANT`…）、**NoSQL 数据源写**（`redis-cli SET/DEL/FLUSHALL`、`mongosh insertOne/updateOne/drop`…）、硬保护路径（`/etc/shadow`、`~/.ssh`、`/proc`、`/sys`、`/dev`、`/boot`）。文件写分区判定：scratch 临时区（`/tmp`）免确认放行、`/dev/null` 丢弃视为只读、其余默认阻断；系统环境变更（服务/进程/包管理/挂载/crontab）与数据源写**永不享受 scratch 豁免**；symlink 逃逸与 `..` 穿越经 realpath/规范化拦截 | [src/safety/policy.ts](src/safety/policy.ts) · [src/safety/patterns.ts](src/safety/patterns.ts) |
+| 2. LLM 语义层（`LlmAuditor`） | 审计写/脚本的变量间接、混淆、外泄、提权。取严合并——LLM 只能升级，不能降级。fail-safe：异常时升级为人工确认。scratch/discard 区跳过（免确认承诺不被 fail-safe 打破）。                                                                 | [src/audit/llm.ts](src/audit/llm.ts)                                                            |
 | 3. 确认门 + 审计              | 写/破坏性操作需交互 `y/N`；无 UI（print 模式）则 fail-closed 阻断。每条决策与结果入哈希链审计日志。                                                                                                                                    | [src/safety/extension.ts](src/safety/extension.ts) · [src/audit/store.ts](src/audit/store.ts)   |
+| 4. OS 沙箱（`SandboxRunner`） | `run_script` 生成的脚本在 OS 沙箱中执行（macOS `sandbox-exec` / Linux `bwrap`）：**进程级**强制只可写 scratch 区与 `/dev/null`，读取/执行/网络不受限（只读分析是核心用例）。自动探测可用性：`auto`（默认，不可用回退模式层并审计警告）、`require`（不可用拒绝执行）。直接 `bash /tmp/x.sh` 被第 1 层阻断——scratch 脚本一律经 `run_script` 走沙箱 | [src/safety/sandbox.ts](src/safety/sandbox.ts) · [src/tools/script.ts](src/tools/script.ts)     |
 
 ### 安全演示
 
-| 默认阻塞 (Blocked) | 开启 `--allow-write` (需确认) |
-| :---: | :---: |
+|             默认阻塞 (Blocked)             |          开启 `--allow-write` (需确认)           |
+| :----------------------------------------: | :----------------------------------------------: |
 | ![默认阻塞](docs/images/blocked_write.png) | ![写确认](docs/images/allowed_write_confirm.png) |
 
 **保证：**
 
 - 删除类工具（`controlled_delete`、`db_mutate`）**默认不注册**——仅 `--allow-destructive` 时注册，且仍需确认 + 理由（[src/tools/destructive.ts](src/tools/destructive.ts)）。
-- `write`/`edit` 工具默认关闭——需 `--allow-write` + 逐次确认。
+- **默认只读模式只能写 scratch 临时区**（`/tmp`，免确认，用于生成脚本与辅助文档）与 `/dev/null`（丢弃输出，视为只读）；其余任何路径写入、系统环境变更（服务/进程/包管理/挂载/crontab）、数据源写（SQL 写与 redis/mongo 写命令）一律阻断；只读查询不受影响。
+- `write`/`edit` 工具默认可用，但被 `PolicyGuard` 限制在 scratch 区（`OPAGENT_SCRATCH_PATHS` 可配）；白名单写入仍需 `--allow-write` + 逐次确认。
+- scratch 脚本必须走 `run_script`（直接 `bash /tmp/x.sh` 被阻断，内容未经校验）；沙箱内写边界由 OS 强制。
 - 运行命令/SQL 的 collector 也过 `PolicyGuard`（防御纵深）——[src/monitor/builtin/collectors/file_sql_cmd.ts](src/monitor/builtin/collectors/file_sql_cmd.ts)。
-- 生成脚本走 `run_script`：`bash -n` 语法检查 → `dry_run` 预览 → 模式+LLM 审计 → 确认 → 执行（[src/tools/script.ts](src/tools/script.ts)）。
+- 生成脚本走 `run_script`：`bash -n` 语法检查 → `dry_run` 预览 → 模式+LLM 审计 → 确认 → **OS 沙箱内执行**（[src/tools/script.ts](src/tools/script.ts)）。
 
 ### 审计链
 
@@ -207,19 +210,24 @@ opagent monitor new-notifier <name>  # 生成自定义 notifier 模板
 | `-p, --print`         | —                             | —                            | headless 单次                   |
 | —                     | `OPAGENT_DIR`                 | `~/.op_agent`                | 配置目录                        |
 | —                     | `OPAGENT_WRITE_PATHS`         | `<cwd>/workspace`            | 写白名单（冒号分隔）            |
+| —                     | `OPAGENT_SCRATCH_PATHS`       | `/tmp`                       | scratch 临时区，免确认可写（冒号分隔；只应指向真正的临时目录） |
+| —                     | `OPAGENT_SANDBOX`             | `auto`                       | `run_script` OS 沙箱：`auto`（可用则沙箱、不可用回退+审计警告）/ `require`（不可用拒绝执行）/ `off` |
 | —                     | `OPAGENT_AUDIT_DB`            | `~/.op_agent/audit.db`       | 审计 DB 路径                    |
 
 ---
 
-## 安全模型（三层）
+## 安全模型（四层）
 
-1. **模式层**（`PolicyGuard`）：快、确定。阻断 `rm -rf`、`mkfs`、`find -delete`、`| sh`、`eval`、`base64|sh`、解释器删除（`python os.remove`、`perl unlink`…）、危险 SQL（`DROP`/`TRUNCATE`/无 `WHERE` 的 `DELETE`），以及硬保护路径（`/etc/shadow`、`~/.ssh`、`/proc`、`/sys`、`/dev`、`/boot`）。
-2. **LLM 层**（`LlmAuditor`，`--llm_audit`）：对写/脚本做语义审计——抓变量间接、混淆、外泄、提权。取严合并（LLM 只能升级，不能降级）。fail-safe：异常时升级为人工确认。
+1. **模式层**（`PolicyGuard`）：快、确定。阻断 `rm -rf`、`mkfs`、`find -delete`、`| sh`、`eval`、`base64|sh`、解释器删除（`python os.remove`、`perl unlink`…）与解释器写文件（`python open('w')`、`node writeFileSync`）、危险 SQL（`DROP`/`TRUNCATE`/无 `WHERE` 的 `DELETE`）、**写 SQL**（`INSERT`/`UPDATE`/`CREATE`/`ALTER`/`GRANT`/`REPLACE`/`MERGE`）、**NoSQL 数据源写**（`redis-cli SET/DEL/FLUSHALL`、`mongosh insertOne/updateOne/deleteOne/drop` 等），以及硬保护路径（`/etc/shadow`、`~/.ssh`、`/proc`、`/sys`、`/dev`、`/boot`）。文件写按落区分判：scratch（`/tmp`）免确认、`/dev/null` 丢弃视为只读、其余需 `--allow-write`；系统状态变更（服务/进程/包管理/挂载/crontab）永不 scratch 豁免；symlink 逃逸与 `..` 穿越被解析拦截。
+2. **LLM 层**（`LlmAuditor`，`--llm_audit`）：对写/脚本做语义审计——抓变量间接、混淆、外泄、提权。取严合并（LLM 只能升级，不能降级）。fail-safe：异常时升级为人工确认。scratch/discard 区跳过（免确认承诺不被破坏）。
 3. **确认门 + 审计**：写/破坏性操作需交互 `y/N`；每条决策与执行结果写入哈希链审计日志。
+4. **OS 沙箱**（`SandboxRunner`，默认只读模式启用）：`run_script` 脚本在 `sandbox-exec`（macOS）/ `bwrap`（Linux）中执行——进程级写隔离到 scratch 区与 `/dev/null`；读取、执行、网络不受限。`OPAGENT_SANDBOX=auto|require|off` 控制不可用时的行为；每次沙箱执行/回退/拒绝都入审计链。直接执行 scratch 脚本（`bash /tmp/x.sh`）在第 1 层被阻断——脚本必须经 `run_script`。
 
 安全等级与参数绑定：`--allow-write` / `--allow-destructive` 决定 LLM 审计可放行的范围。`/audit list`、`/audit verify` slash 命令查询与校验审计链。
 
 删除类工具（`controlled_delete`、`db_mutate`）**默认不注册**——仅 `--allow-destructive` 时注册，且仍需确认 + 理由。
+
+已知残余面（文档明示，由 2–4 层缓解）：`find -exec`、二进制间接执行、bash 工具（非 run_script）内动态构造的写路径——模式层尽力拦截，沙箱路径为强制。
 
 ---
 
