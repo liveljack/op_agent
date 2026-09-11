@@ -7,15 +7,13 @@
  */
 
 import {
-  AuthStorage,
   createAgentSessionFromServices,
   createAgentSessionRuntime,
   createAgentSessionServices,
-  DefaultResourceLoader,
   getAgentDir,
   InteractiveMode,
   type InlineExtension,
-  ModelRegistry,
+  ModelRuntime,
   resolveCliModel,
   runPrintMode,
   SessionManager,
@@ -222,20 +220,20 @@ async function buildShared(args: CliArgs) {
 }
 
 /** 解析模型；失败则返回 undefined 交由 pi 兜底选第一个可用 */
-function resolveModel(config: OpAgentConfig, authStorage: AuthStorage, modelRegistry: ModelRegistry) {
+async function resolveModel(config: OpAgentConfig, modelRuntime: ModelRuntime) {
   const parts = config.model.split("/");
   const provider = parts[0] ?? config.model;
   const modelId = parts.slice(1).join("/") || config.model;
   if (config.apiKey) {
     try {
-      authStorage.setRuntimeApiKey(provider, config.apiKey);
+      await modelRuntime.setRuntimeApiKey(provider, config.apiKey);
     } catch {
       /* provider 未知时忽略，交由 pi 兜底 */
     }
   }
   const res = resolveCliModel({
     cliModel: `${provider}/${modelId}`,
-    modelRegistry,
+    modelRuntime,
   });
   if (res.error) {
     console.warn(`[opagent] 模型解析失败：${res.error}（将使用第一个可用模型）`);
@@ -251,21 +249,20 @@ function buildToolAllowlist(config: OpAgentConfig, customToolNames: string[]): s
   return tools;
 }
 
-function buildRuntimeFactory(shared: Awaited<ReturnType<typeof buildShared>>) {
+async function buildRuntimeFactory(shared: Awaited<ReturnType<typeof buildShared>>) {
   const { config, extensions, customTools, builtinSkills } = shared;
-  const authStorage = AuthStorage.create(`${config.agentDir}/auth.json`);
-  const modelRegistry = ModelRegistry.create(
-    authStorage,
-    `${config.agentDir}/models.json`,
-  );
+  const modelRuntime = await ModelRuntime.create({
+    authPath: `${config.agentDir}/auth.json`,
+    modelsPath: `${config.agentDir}/models.json`,
+  });
   const settingsManager = SettingsManager.create(config.cwd, config.agentDir);
 
   return async ({ cwd, sessionManager, sessionStartEvent }: any) => {
     const services = await createAgentSessionServices({
       cwd,
-      authStorage,
+      agentDir: config.agentDir,
       settingsManager,
-      modelRegistry,
+      modelRuntime,
       resourceLoaderOptions: {
         extensionFactories: extensions,
         systemPromptOverride: () => buildSystemPrompt(config),
@@ -281,7 +278,7 @@ function buildRuntimeFactory(shared: Awaited<ReturnType<typeof buildShared>>) {
       services,
       sessionManager,
       sessionStartEvent,
-      model: resolveModel(config, authStorage, modelRegistry),
+      model: await resolveModel(config, modelRuntime),
       tools: buildToolAllowlist(config, customToolNames),
       customTools,
     });
@@ -356,7 +353,8 @@ async function main() {
   }
 
   const { config } = shared;
-  const runtime = await createAgentSessionRuntime(buildRuntimeFactory(shared), {
+  const runtimeFactory = await buildRuntimeFactory(shared);
+  const runtime = await createAgentSessionRuntime(runtimeFactory, {
     cwd: config.cwd,
     agentDir: getAgentDir() ?? config.agentDir,
     sessionManager: SessionManager.create(config.cwd),
