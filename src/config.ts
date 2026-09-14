@@ -9,11 +9,11 @@
  * DeepSeek 为默认模型；pi 原生支持 DeepSeek provider，DEEPSEEK_API_KEY 即可鉴权。
  */
 
-import { homedir } from "node:os";
-import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { homedir } from 'node:os';
+import { existsSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 
-export const DEFAULT_AGENT_DIR_NAME = ".op_agent";
+export const DEFAULT_AGENT_DIR_NAME = '.op_agent';
 
 export interface OpAgentConfig {
   /** 模型标识，格式 provider/model（pi resolveCliModel 解析），默认 deepseek */
@@ -33,7 +33,7 @@ export interface OpAgentConfig {
   /** scratch 临时区（默认 ["/tmp"]）：默认只读模式下免确认可写，symlink 不可逃逸出区 */
   scratchPaths: string[];
   /** run_script OS 沙箱策略：auto=可用则沙箱、不可用回退；require=不可用拒绝执行；off=关闭 */
-  sandbox: "auto" | "require" | "off";
+  sandbox: 'auto' | 'require' | 'off';
   /** 审计 DB 路径 */
   auditDbPath: string;
   /** 内置技能目录 */
@@ -64,25 +64,22 @@ export interface OpAgentConfig {
  */
 export function loadEnvFile(envPath: string): { loaded: number; path: string } {
   if (!existsSync(envPath)) return { loaded: 0, path: envPath };
-  const text = readFileSync(envPath, "utf-8");
+  const text = readFileSync(envPath, 'utf-8');
   let loaded = 0;
-  for (const raw of text.split("\n")) {
+  for (const raw of text.split('\n')) {
     let line = raw.trim();
-    if (!line || line.startsWith("#")) continue;
-    if (line.startsWith("export ")) line = line.slice(7).trim();
-    const eq = line.indexOf("=");
+    if (!line || line.startsWith('#')) continue;
+    if (line.startsWith('export ')) line = line.slice(7).trim();
+    const eq = line.indexOf('=');
     if (eq < 0) continue;
     const key = line.slice(0, eq).trim();
     let val = line.slice(eq + 1).trim();
     // 去除注释（仅对未加引号的值）
     if (!val.startsWith('"') && !val.startsWith("'")) {
-      const hash = val.indexOf(" #");
+      const hash = val.indexOf(' #');
       if (hash >= 0) val = val.slice(0, hash).trim();
     }
-    if (
-      (val.startsWith('"') && val.endsWith('"')) ||
-      (val.startsWith("'") && val.endsWith("'"))
-    ) {
+    if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
       val = val.slice(1, -1);
     }
     if (key && !(key in process.env)) {
@@ -103,38 +100,32 @@ export function loadConfig(overrides: Partial<OpAgentConfig> = {}): OpAgentConfi
     overrides.agentDir ?? process.env.OPAGENT_DIR ?? join(home, DEFAULT_AGENT_DIR_NAME);
 
   // 全局 .env 兜底：仅填充 process.env 中缺失的键（process.env 优先）
-  loadEnvFile(join(agentDir, ".env"));
+  loadEnvFile(join(agentDir, '.env'));
 
-  const allowWrite = overrides.allowWrite ?? process.env.OPAGENT_ALLOW_WRITE === "1";
+  const allowWrite = overrides.allowWrite ?? process.env.OPAGENT_ALLOW_WRITE === '1';
   const allowDestructive =
-    overrides.allowDestructive ?? process.env.OPAGENT_ALLOW_DESTRUCTIVE === "1";
+    overrides.allowDestructive ?? process.env.OPAGENT_ALLOW_DESTRUCTIVE === '1';
 
   // 写白名单：默认工作区目录；可通过 OPAGENT_WRITE_PATHS（冒号分隔）扩展
-  const writePathsEnv = process.env.OPAGENT_WRITE_PATHS ?? "";
-  const writePaths = [
-    join(cwd, "workspace"),
-    ...writePathsEnv.split(":").filter(Boolean),
-  ];
+  const writePathsEnv = process.env.OPAGENT_WRITE_PATHS ?? '';
+  const writePaths = [join(cwd, 'workspace'), ...writePathsEnv.split(':').filter(Boolean)];
 
   // scratch 临时区：默认 /tmp；只应指向真正的临时目录（OPAGENT_SCRATCH_PATHS 冒号分隔）
   const scratchPaths =
     overrides.scratchPaths ??
-    (process.env.OPAGENT_SCRATCH_PATHS ?? "/tmp")
-      .split(":")
+    (process.env.OPAGENT_SCRATCH_PATHS ?? '/tmp')
+      .split(':')
       .map((s) => s.trim())
       .filter(Boolean);
 
   // run_script OS 沙箱策略：非法值回退 auto
   const sandboxEnv = process.env.OPAGENT_SANDBOX;
   const sandbox =
-    overrides.sandbox ?? (sandboxEnv === "require" || sandboxEnv === "off" ? sandboxEnv : "auto");
+    overrides.sandbox ?? (sandboxEnv === 'require' || sandboxEnv === 'off' ? sandboxEnv : 'auto');
 
   return {
-    model: overrides.model ?? process.env.OPAGENT_MODEL ?? "deepseek/deepseek-v4-flash",
-    apiKey:
-      overrides.apiKey ??
-      process.env.DEEPSEEK_API_KEY ??
-      process.env.OPAGENT_API_KEY,
+    model: overrides.model ?? process.env.OPAGENT_MODEL ?? 'deepseek/deepseek-flash',
+    apiKey: overrides.apiKey ?? process.env.DEEPSEEK_API_KEY ?? process.env.OPAGENT_API_KEY,
     agentDir,
     cwd,
     allowWrite,
@@ -142,16 +133,15 @@ export function loadConfig(overrides: Partial<OpAgentConfig> = {}): OpAgentConfi
     writePaths: overrides.writePaths ?? writePaths,
     scratchPaths,
     sandbox,
-    auditDbPath: overrides.auditDbPath ?? process.env.OPAGENT_AUDIT_DB ?? join(agentDir, "audit.db"),
-    skillsDir: overrides.skillsDir ?? join(cwd, "skills"),
-    llmAudit: overrides.llmAudit ?? process.env.OPAGENT_LLM_AUDIT === "1",
+    auditDbPath:
+      overrides.auditDbPath ?? process.env.OPAGENT_AUDIT_DB ?? join(agentDir, 'audit.db'),
+    skillsDir: overrides.skillsDir ?? join(cwd, 'skills'),
+    llmAudit: overrides.llmAudit ?? process.env.OPAGENT_LLM_AUDIT === '1',
     auditBaseUrl:
-      overrides.auditBaseUrl ?? process.env.OPAGENT_AUDIT_BASE_URL ?? "https://api.deepseek.com",
-    auditModel: overrides.auditModel ?? process.env.OPAGENT_AUDIT_MODEL ?? "deepseek-chat",
+      overrides.auditBaseUrl ?? process.env.OPAGENT_AUDIT_BASE_URL ?? 'https://api.deepseek.com',
+    auditModel: overrides.auditModel ?? process.env.OPAGENT_AUDIT_MODEL ?? 'deepseek-chat',
     auditApiKey:
-      overrides.auditApiKey ??
-      process.env.OPAGENT_AUDIT_API_KEY ??
-      process.env.DEEPSEEK_API_KEY,
+      overrides.auditApiKey ?? process.env.OPAGENT_AUDIT_API_KEY ?? process.env.DEEPSEEK_API_KEY,
     home,
   };
 }

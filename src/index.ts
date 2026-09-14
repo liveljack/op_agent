@@ -18,29 +18,26 @@ import {
   runPrintMode,
   SessionManager,
   SettingsManager,
-} from "@earendil-works/pi-coding-agent";
+} from '@earendil-works/pi-coding-agent';
 
-import { loadConfig, type OpAgentConfig } from "./config.ts";
-import { buildSystemPrompt } from "./prompt.ts";
-import { PolicyGuard } from "./safety/policy.ts";
-import { createSafetyExtension } from "./safety/extension.ts";
-import { SandboxRunner } from "./safety/sandbox.ts";
-import { createAuditExtension } from "./audit/extension.ts";
-import { createAuditStore } from "./audit/store.ts";
-import { createInspectTools } from "./tools/inspect.ts";
-import { createDestructiveTools } from "./tools/destructive.ts";
-import { createScriptTools } from "./tools/script.ts";
-import { LlmAuditor } from "./audit/llm.ts";
-import { loadBuiltinSkills } from "./skills/index.ts";
-import { createRegistry } from "./monitor/registry.ts";
-import { createMonitorTools } from "./monitor/tools.ts";
-import { MonitorDaemon } from "./monitor/daemon.ts";
-import {
-  generateCollectorScaffold,
-  generateNotifierScaffold,
-} from "./monitor/scaffold.ts";
-import { hostname } from "node:os";
-import { join } from "node:path";
+import { loadConfig, type OpAgentConfig } from './config.ts';
+import { buildSystemPrompt } from './prompt.ts';
+import { PolicyGuard } from './safety/policy.ts';
+import { createSafetyExtension } from './safety/extension.ts';
+import { SandboxRunner } from './safety/sandbox.ts';
+import { createAuditExtension } from './audit/extension.ts';
+import { createAuditStore } from './audit/store.ts';
+import { createInspectTools } from './tools/inspect.ts';
+import { createDestructiveTools } from './tools/destructive.ts';
+import { createScriptTools } from './tools/script.ts';
+import { LlmAuditor } from './audit/llm.ts';
+import { loadBuiltinSkills } from './skills/index.ts';
+import { createRegistry } from './monitor/registry.ts';
+import { createMonitorTools } from './monitor/tools.ts';
+import { MonitorDaemon } from './monitor/daemon.ts';
+import { generateCollectorScaffold, generateNotifierScaffold } from './monitor/scaffold.ts';
+import { hostname } from 'node:os';
+import { join } from 'node:path';
 
 interface CliArgs {
   allowWrite?: boolean;
@@ -61,31 +58,31 @@ function parseArgs(argv: string[]): CliArgs {
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     switch (a) {
-      case "--allow-write":
+      case '--allow-write':
         args.allowWrite = true;
         break;
-      case "--allow-destructive":
+      case '--allow-destructive':
         args.allowDestructive = true;
         break;
-      case "--llm_audit":
-      case "--llm-audit":
+      case '--llm_audit':
+      case '--llm-audit':
         args.llmAudit = true;
         break;
-      case "--model":
+      case '--model':
         args.model = argv[++i];
         break;
-      case "--cwd":
+      case '--cwd':
         args.cwd = argv[++i];
         break;
-      case "-p":
-      case "--print":
+      case '-p':
+      case '--print':
         args.print = argv[++i];
         break;
-      case "--self-test":
+      case '--self-test':
         args.selfTest = true;
         break;
-      case "-h":
-      case "--help":
+      case '-h':
+      case '--help':
         args.help = true;
         break;
     }
@@ -171,7 +168,9 @@ async function buildShared(args: CliArgs) {
       })
     : undefined;
   if (config.llmAudit && !auditor?.enabled) {
-    console.warn("[opagent] --llm_audit 已启用但未配置 API key（OPAGENT_AUDIT_API_KEY/DEEPSEEK_API_KEY），LLM 审计将跳过");
+    console.warn(
+      '[opagent] --llm_audit 已启用但未配置 API key（OPAGENT_AUDIT_API_KEY/DEEPSEEK_API_KEY），LLM 审计将跳过'
+    );
   }
 
   const safetyLevel = {
@@ -181,7 +180,7 @@ async function buildShared(args: CliArgs) {
 
   const extensions: InlineExtension[] = [
     {
-      name: "opagent-safety",
+      name: 'opagent-safety',
       factory: createSafetyExtension({
         guard,
         audit,
@@ -191,11 +190,11 @@ async function buildShared(args: CliArgs) {
         sandbox,
       }),
     },
-    { name: "opagent-audit", factory: createAuditExtension(audit) },
+    { name: 'opagent-audit', factory: createAuditExtension(audit) },
   ];
 
   // 监控插件注册表 + monitor_* 工具
-  const monitorDbPath = join(config.agentDir, "monitor.db");
+  const monitorDbPath = join(config.agentDir, 'monitor.db');
   const registry = await createRegistry(config.agentDir);
   const monitorTools = createMonitorTools({
     registry,
@@ -216,14 +215,25 @@ async function buildShared(args: CliArgs) {
   }
 
   const builtinSkills = loadBuiltinSkills(config.skillsDir);
-  return { config, guard, audit, sandbox, auditor, registry, monitorDbPath, extensions, customTools, builtinSkills };
+  return {
+    config,
+    guard,
+    audit,
+    sandbox,
+    auditor,
+    registry,
+    monitorDbPath,
+    extensions,
+    customTools,
+    builtinSkills,
+  };
 }
 
 /** 解析模型；失败则返回 undefined 交由 pi 兜底选第一个可用 */
 async function resolveModel(config: OpAgentConfig, modelRuntime: ModelRuntime) {
-  const parts = config.model.split("/");
+  const parts = config.model.split('/');
   const provider = parts[0] ?? config.model;
-  const modelId = parts.slice(1).join("/") || config.model;
+  const modelId = parts.slice(1).join('/') || config.model;
   if (config.apiKey) {
     try {
       await modelRuntime.setRuntimeApiKey(provider, config.apiKey);
@@ -245,7 +255,7 @@ async function resolveModel(config: OpAgentConfig, modelRuntime: ModelRuntime) {
 
 /** 构建工具允许列表：write/edit 默认暴露，路径约束由 PolicyGuard 限制在 scratch 区 */
 function buildToolAllowlist(config: OpAgentConfig, customToolNames: string[]): string[] {
-  const tools = ["read", "grep", "find", "ls", "bash", "write", "edit", ...customToolNames];
+  const tools = ['read', 'grep', 'find', 'ls', 'bash', 'write', 'edit', ...customToolNames];
   return tools;
 }
 
@@ -294,48 +304,58 @@ async function buildRuntimeFactory(shared: Awaited<ReturnType<typeof buildShared
 async function selfTest(shared: Awaited<ReturnType<typeof buildShared>>) {
   const { config, guard, audit, sandbox, customTools, builtinSkills } = shared;
   const sandboxInfo = await sandbox.info();
-  console.log("=== OpAgent 自检 ===");
+  console.log('=== OpAgent 自检 ===');
   console.log(`工作目录   : ${config.cwd}`);
   console.log(`配置目录   : ${config.agentDir}`);
   console.log(`模型       : ${config.model}`);
-  console.log(`API Key    : ${config.apiKey ? "已设置" : "未设置"}`);
+  console.log(`API Key    : ${config.apiKey ? '已设置' : '未设置'}`);
   console.log(`允许写     : ${config.allowWrite}`);
   console.log(`允许破坏性 : ${config.allowDestructive}`);
-  console.log(`LLM审计    : ${config.llmAudit ? `启用 (${config.auditModel}${shared.auditor?.enabled ? "" : ", 无key跳过"})` : "关闭"}`);
-  console.log(`写白名单   : ${config.writePaths.join(", ") || "（空）"}`);
-  console.log(`scratch 区 : ${config.scratchPaths.join(", ")}`);
-  console.log(`OS 沙箱    : ${sandboxInfo.kind}${sandbox.shouldSandbox() ? "（run_script 启用）" : "（关闭）"} — ${sandboxInfo.detail}`);
+  console.log(
+    `LLM审计    : ${config.llmAudit ? `启用 (${config.auditModel}${shared.auditor?.enabled ? '' : ', 无key跳过'})` : '关闭'}`
+  );
+  console.log(`写白名单   : ${config.writePaths.join(', ') || '（空）'}`);
+  console.log(`scratch 区 : ${config.scratchPaths.join(', ')}`);
+  console.log(
+    `OS 沙箱    : ${sandboxInfo.kind}${sandbox.shouldSandbox() ? '（run_script 启用）' : '（关闭）'} — ${sandboxInfo.detail}`
+  );
   console.log(`审计 DB    : ${config.auditDbPath}`);
-  console.log(`工具       : ${customTools.map((t: any) => t.name).join(", ")}`);
-  console.log(`技能       : ${builtinSkills.map((s) => s.name).join(", ") || "（无）"}`);
-  console.log("\n=== 策略抽测 ===");
+  console.log(`工具       : ${customTools.map((t: any) => t.name).join(', ')}`);
+  console.log(`技能       : ${builtinSkills.map((s) => s.name).join(', ') || '（无）'}`);
+  console.log('\n=== 策略抽测 ===');
   const cases = [
-    "df -h",
-    "df -h > /dev/null 2>&1",
-    "echo x > /tmp/a.sh",
-    "rm -rf /tmp/x",
-    "systemctl restart nginx",
-    "apt install -y curl",
-    "psql -c \"INSERT INTO t VALUES(1)\"",
-    "redis-cli SET k v",
-    "bash /tmp/x.sh",
-    "cat /etc/shadow",
-    "echo hi > /etc/passwd",
+    'df -h',
+    'df -h > /dev/null 2>&1',
+    'echo x > /tmp/a.sh',
+    'rm -rf /tmp/x',
+    'systemctl restart nginx',
+    'apt install -y curl',
+    'psql -c "INSERT INTO t VALUES(1)"',
+    'redis-cli SET k v',
+    'bash /tmp/x.sh',
+    'cat /etc/shadow',
+    'echo hi > /etc/passwd',
   ];
   for (const c of cases) {
     const d = guard.checkBash(c);
-    const tag = d.allow ? (d.requireConfirm ? "CONFIRM" : d.zone === "scratch" ? "SCRATCH" : "READ") : "BLOCKED";
-    console.log(`  [${tag}] ${c}  ${d.reason ? "— " + d.reason : ""}`);
+    const tag = d.allow
+      ? d.requireConfirm
+        ? 'CONFIRM'
+        : d.zone === 'scratch'
+          ? 'SCRATCH'
+          : 'READ'
+      : 'BLOCKED';
+    console.log(`  [${tag}] ${c}  ${d.reason ? '— ' + d.reason : ''}`);
   }
-  console.log(`\n审计链校验: ${audit.verify().ok ? "OK" : "损坏"}`);
-  console.log("=== 自检完成 ===");
+  console.log(`\n审计链校验: ${audit.verify().ok ? 'OK' : '损坏'}`);
+  console.log('=== 自检完成 ===');
 }
 
 async function main() {
   const argv = process.argv.slice(2);
 
   // monitor 子命令：opagent monitor [new-collector|new-notifier <name>]
-  if (argv[0] === "monitor") {
+  if (argv[0] === 'monitor') {
     return runMonitorSubcommand(argv.slice(1));
   }
 
@@ -362,7 +382,7 @@ async function main() {
 
   if (args.print !== undefined) {
     await runPrintMode(runtime, {
-      mode: "text",
+      mode: 'text',
       initialMessage: args.print || undefined,
       initialImages: [],
       messages: [],
@@ -384,15 +404,15 @@ async function main() {
 async function runMonitorSubcommand(args: string[]) {
   const sub = args[0];
   const config = loadConfig({});
-  if (sub === "new-collector") {
+  if (sub === 'new-collector') {
     const name = args[1];
-    if (!name) return console.error("用法: opagent monitor new-collector <name>");
+    if (!name) return console.error('用法: opagent monitor new-collector <name>');
     console.log(generateCollectorScaffold(config.agentDir, name));
     return;
   }
-  if (sub === "new-notifier") {
+  if (sub === 'new-notifier') {
     const name = args[1];
-    if (!name) return console.error("用法: opagent monitor new-notifier <name>");
+    if (!name) return console.error('用法: opagent monitor new-notifier <name>');
     console.log(generateNotifierScaffold(config.agentDir, name));
     return;
   }
@@ -409,22 +429,22 @@ async function runMonitorSubcommand(args: string[]) {
   const daemon = new MonitorDaemon({
     registry,
     agentDir: config.agentDir,
-    dbPath: join(config.agentDir, "monitor.db"),
+    dbPath: join(config.agentDir, 'monitor.db'),
     guard,
   });
   await daemon.start();
   // 保持进程运行
-  process.on("SIGINT", () => {
+  process.on('SIGINT', () => {
     daemon.stop();
     process.exit(0);
   });
-  process.on("SIGTERM", () => {
+  process.on('SIGTERM', () => {
     daemon.stop();
     process.exit(0);
   });
 }
 
 main().catch((e) => {
-  console.error("[opagent] 启动失败:", e);
+  console.error('[opagent] 启动失败:', e);
   process.exit(1);
 });
