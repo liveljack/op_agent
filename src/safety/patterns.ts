@@ -193,6 +193,9 @@ export const WRITE_COMMAND_PATTERNS: DangerPattern[] = [
   // crontab 任何非 -l 用法都可能改 crontab（-e 编辑、<file> 安装）
   { name: 'crontab_edit', risk: 'write', pattern: /\bcrontab\b(?!\s+-l\b)/ },
   // —— 文件写（file 类：目标可提取，按 scratch 分区判定）——
+  // redirect_write 只做粗筛：命中后由 PolicyGuard.classifyFileWrites 提取目标分区；
+  // 引号内的 > 是 SQL 比较符/字符串字面量（WHERE a > 10），由 classifyFileWrites
+  // 的 stripQuoted 剥离后判定为无重定向目标 → 读语义放行。
   { name: 'redirect_write', risk: 'write', kind: 'file', pattern: /(>>?|tee)\s*\S/ },
   { name: 'dd_write', risk: 'write', kind: 'file', pattern: /\bdd\b[^|;&]*\bof\s*=/ },
   { name: 'mv_cp_overwrite', risk: 'write', kind: 'file', pattern: /\b(mv|cp|install)\b/ },

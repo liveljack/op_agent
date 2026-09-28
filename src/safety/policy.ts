@@ -343,6 +343,11 @@ export class PolicyGuard {
       if (dupOnlyRedirect && fileHits.every((h) => h === 'redirect_write')) {
         return { ...ALLOW_READ, matches };
       }
+      // redirect_write 粗筛命中但剥离引号后无重定向目标：
+      // > 全在引号内（SQL 比较符 WHERE a > 10 / 字符串字面量），非 shell 重定向 → 读语义
+      if (fileHits.every((h) => h === 'redirect_write')) {
+        return { ...ALLOW_READ, matches };
+      }
       return denyWrite();
     }
     // 目标硬保护检查（解释器引号内路径等预检未覆盖的形态）
@@ -645,6 +650,37 @@ export class PolicyGuard {
   }
 
   /**
+   * 剥离引号内内容（单/双引号，含转义）：引号内的 > < | 等是 SQL/字符串字面量，
+   * 不是 shell 重定向/管道。用于重定向检测前的预处理。
+   * 引号不配对时保留原样（保守：交由后续 unresolved 逻辑处理）。
+   */
+  private stripQuoted(text: string): string {
+    let out = '';
+    let quote: string | null = null;
+    for (let i = 0; i < text.length; i++) {
+      const ch = text[i]!;
+      if (quote) {
+        // 转义字符：跳过下一个字符（双引号内 \" 等场景）
+        if (ch === '\\' && quote === '"') {
+          i++;
+          continue;
+        }
+        if (ch === quote) quote = null;
+        out += ' ';
+        continue;
+      }
+      if (ch === "'" || ch === '"') {
+        quote = ch;
+        out += ' ';
+        continue;
+      }
+      out += ch;
+    }
+    // 引号不配对 → 保守返回原文（含引号内内容，交由后续判定）
+    return quote ? text : out;
+  }
+
+  /**
    * 从命令中提取全部文件写目标（全局扫描，复合命令的所有目标都会入列）。
    * - 重定向（含 fd 聚合识别）、tee、dd of=、mv/cp/ln/路径操作数、解释器内路径字面量
    * - token 去引号；含变量/命令替换/glob/引号不配对 → unresolved（保守走 allowWrite 门禁）
@@ -654,6 +690,8 @@ export class PolicyGuard {
     let unresolved = false;
     let dupRedirect = false;
     let nonDupRedirect = false;
+    // 引号内内容先剥离：SQL 比较符（WHERE a > 10）、字符串字面量中的 > 不是重定向
+    const unquoted = this.stripQuoted(command);
 
     const pushTarget = (intent: WriteTarget['intent'], rawPath: string, rawSrcs?: string[]) => {
       const path = this.cleanToken(rawPath);
@@ -677,7 +715,8 @@ export class PolicyGuard {
     };
 
     // a) 重定向：> / >> / 2> / &>；fd 聚合（2>&1 / >&2）不算文件目标
-    for (const m of command.matchAll(/(?:\d*&?)>>?\s*([^\s;|<>]+)/g)) {
+    //    在剥离引号后的文本上匹配（引号内的 > 是 SQL 比较符/字面量）
+    for (const m of unquoted.matchAll(/(?:\d*&?)>>?\s*([^\s;|<>]+)/g)) {
       const t = m[1]!;
       if (this.isFdDup(t)) {
         dupRedirect = true;
@@ -882,7 +921,7 @@ export class PolicyGuard {
         if (cleaned !== null) paths.push(cleaned);
       }
     };
-    push(command.matchAll(/>>?\s*([^\s;|&<>]+)/g)); // 重定向 > file, >> file（不含尾部 ; 等分隔符）
+    push(this.stripQuoted(command).matchAll(/>>?\s*([^\s;|&<>]+)/g)); // 重定向 > file, >> file（引号内 > 已剥离；不含尾部 ; 等分隔符）
     push(command.matchAll(/\btee\s+(?:-a\s+)?(\S+)/g)); // tee file
     push(command.matchAll(/\bof\s*=\s*(\S+)/g)); // dd of=file
     push(command.matchAll(/\s(\/[\w./-]+)/g)); // 裸绝对路径参数

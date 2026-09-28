@@ -408,6 +408,53 @@ describe('PolicyGuard — 系统环境操作拦截（永不 scratch 豁免）', 
   });
 });
 
+describe('PolicyGuard — SQL 比较符 > 不误判为重定向（readonly 直接读取）', () => {
+  const g = makeGuard();
+  test('SQL 比较符/字符串字面量中的 > 放行（读语义）', () => {
+    expect(g.checkBash('mysql -e "SELECT * FROM t WHERE a > 10"').risk).toBe('read');
+    expect(g.checkBash('mysql -e "SELECT * FROM t WHERE a >> 10"').risk).toBe('read');
+    expect(g.checkBash('psql -c "SELECT * FROM t WHERE a > b"').risk).toBe('read');
+    expect(g.checkBash('mysql -e "SELECT a>>b"').risk).toBe('read');
+    expect(g.checkBash('psql -c "SELECT * FROM t WHERE a <> b"').risk).toBe('read');
+    expect(g.checkBash('mysql -e "SELECT * FROM t WHERE a > 10 AND b < 5"').risk).toBe('read');
+    expect(g.checkBash('sqlite3 db "SELECT * FROM t WHERE x > 1"').risk).toBe('read');
+    expect(g.checkBash('mongosh --eval "db.users.find({age: {$gt: 18}})"').risk).toBe('read');
+    // 转义引号内的 >（日期字面量）
+    expect(
+      g.checkBash('mysql -h db -e "SELECT id FROM users WHERE created > \\"2026-01-01\\""').risk
+    ).toBe('read');
+    // 字符串字面量含 >
+    expect(g.checkBash('mysql -e "SELECT * FROM t WHERE name = \\"a>b\\""').risk).toBe('read');
+  });
+  test('真实重定向仍拦截（引号外 >）', () => {
+    expect(g.checkBash('echo x > /etc/important').allow).toBe(false);
+    expect(g.checkBash('echo x > /home/user/file.txt').allow).toBe(false);
+    expect(g.checkBash('cat /etc/passwd > /tmp/leak.txt').allow).toBe(false);
+    expect(g.checkBash('mysql -e "SELECT 1" > /root/backup.sql').allow).toBe(false);
+    expect(g.checkBash('echo hi >> /var/log/app.log').allow).toBe(false);
+    expect(g.checkBash('echo x | tee /etc/important').allow).toBe(false);
+  });
+  test('scratch/discard 重定向语义不变', () => {
+    const scratch = g.checkBash('echo x > /tmp/a.txt');
+    expect(scratch.allow).toBe(true);
+    expect(scratch.zone).toBe('scratch');
+    const discard = g.checkBash('redis-cli GET k > /dev/null');
+    expect(discard.allow).toBe(true);
+    expect(discard.zone).toBe('discard');
+  });
+  test('readonly 直接读取数据源（无需生成脚本）', () => {
+    expect(g.checkBash('mysql -h db -u ops -e "SELECT * FROM users LIMIT 10"').risk).toBe('read');
+    expect(g.checkBash('psql -h db -U ops -d mydb -c "SELECT count(*) FROM t"').risk).toBe('read');
+    expect(g.checkBash('redis-cli -h redis GET session:abc').risk).toBe('read');
+    expect(
+      g.checkBash('mongosh "mongodb://db:27017" --quiet --eval "db.users.find().limit(5)"').risk
+    ).toBe('read');
+    expect(g.checkBash('sqlite3 /data/app.db "SELECT * FROM t WHERE id=1"').risk).toBe('read');
+    // heredoc 多行 SQL
+    expect(g.checkBash('psql -h db <<"SQL"\nSELECT * FROM t;\nSQL').risk).toBe('read');
+  });
+});
+
 describe('PolicyGuard — NoSQL 数据源写命令拦截', () => {
   const g = makeGuard();
   test('redis-cli 写命令默认阻断', () => {
