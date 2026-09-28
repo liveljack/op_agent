@@ -19,12 +19,12 @@ OpAgent is purpose-built for **lightweight Linux operations**: a single Bun proc
 
 All model-proposed actions pass through a **four-tier defense** before anything executes. Interception happens inside pi's `tool_call` hook (before execution), so the model cannot bypass it.
 
-| Tier                           | What it does                                                                                                                                                                                                                                                                            | Code                                                                                            |
-| ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
-| 1. Pattern (`PolicyGuard`)     | Fast deterministic block of destructive commands (`rm -rf`, `mkfs`, `find -delete`, `\| sh`, `eval`, `base64\|sh`, interpreter deletion), destructive SQL (`DROP`/`TRUNCATE`/`DELETE` without `WHERE`), and protected paths (`/etc/shadow`, `~/.ssh`, `/proc`, `/sys`, `/dev`, `/boot`). Classifies file writes by zone: **scratch** (`/tmp`, no confirm), **discard** (`/dev/null`, treated as read), everything else blocked by default. System-state changes (services/processes/packages/mounts/crontab) and **data-source writes** (write SQL + `redis-cli`/`mongosh` write commands) are never scratch-exempt. Symlink escapes out of scratch are caught via `realpath` resolution. | [src/safety/policy.ts](src/safety/policy.ts) · [src/safety/patterns.ts](src/safety/patterns.ts) |
-| 2. LLM semantic (`LlmAuditor`) | Audits writes/scripts for variable indirection, obfuscation, exfiltration, privilege escalation. Merged **strict** — LLM can only escalate, never downgrade. Fail-safe: on error, escalates to human confirm. Skipped for scratch/discard zones (no-confirm promise).                    | [src/audit/llm.ts](src/audit/llm.ts)                                                            |
-| 3. Confirm gate + audit        | Writes/destructive require interactive `y/N`; no UI (print mode) → fail-closed block. Every decision and result goes to the hash-chained audit log.                                                                                                                                     | [src/safety/extension.ts](src/safety/extension.ts) · [src/audit/store.ts](src/audit/store.ts)   |
-| 4. OS sandbox (`SandboxRunner`) | `run_script` executes generated scripts inside an OS sandbox (macOS `sandbox-exec` / Linux `bwrap`): writes are confined to the scratch zone + `/dev/null` **at the process level**; reads/exec/network stay open (read-only analysis is the core use case). Auto-detects availability: `auto` (default) falls back to pattern layer with an audit warning, `require` refuses to run without a sandbox. | [src/safety/sandbox.ts](src/safety/sandbox.ts) · [src/tools/script.ts](src/tools/script.ts)     |
+| Tier                            | What it does                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              | Code                                                                                            |
+| ------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| 1. Pattern (`PolicyGuard`)      | Fast deterministic block of destructive commands (`rm -rf`, `mkfs`, `find -delete`, `\| sh`, `eval`, `base64\|sh`, interpreter deletion), destructive SQL (`DROP`/`TRUNCATE`/`DELETE` without `WHERE`), and protected paths (`/etc/shadow`, `~/.ssh`, `/proc`, `/sys`, `/dev`, `/boot`). Classifies file writes by zone: **scratch** (`/tmp`, no confirm), **discard** (`/dev/null`, treated as read), everything else blocked by default. System-state changes (services/processes/packages/mounts/crontab) and **data-source writes** (write SQL + `redis-cli`/`mongosh` write commands) are never scratch-exempt. Symlink escapes out of scratch are caught via `realpath` resolution. | [src/safety/policy.ts](src/safety/policy.ts) · [src/safety/patterns.ts](src/safety/patterns.ts) |
+| 2. LLM semantic (`LlmAuditor`)  | Audits writes/scripts for variable indirection, obfuscation, exfiltration, privilege escalation. Merged **strict** — LLM can only escalate, never downgrade. Fail-safe: on error, escalates to human confirm. Skipped for scratch/discard zones (no-confirm promise).                                                                                                                                                                                                                                                                                                                                                                                                                     | [src/audit/llm.ts](src/audit/llm.ts)                                                            |
+| 3. Confirm gate + audit         | Writes/destructive require interactive `y/N`; no UI (print mode) → fail-closed block. Every decision and result goes to the hash-chained audit log.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       | [src/safety/extension.ts](src/safety/extension.ts) · [src/audit/store.ts](src/audit/store.ts)   |
+| 4. OS sandbox (`SandboxRunner`) | `run_script` executes generated scripts inside an OS sandbox (macOS `sandbox-exec` / Linux `bwrap`): writes are confined to the scratch zone + `/dev/null` **at the process level**; reads/exec/network stay open (read-only analysis is the core use case). Auto-detects availability: `auto` (default) falls back to pattern layer with an audit warning, `require` refuses to run without a sandbox.                                                                                                                                                                                                                                                                                   | [src/safety/sandbox.ts](src/safety/sandbox.ts) · [src/tools/script.ts](src/tools/script.ts)     |
 
 ### Safety in Action
 
@@ -34,12 +34,34 @@ All model-proposed actions pass through a **four-tier defense** before anything 
 
 **Guarantees:**
 
-- Deleting tools (`controlled_delete`, `db_mutate`) are **not registered by default** — only with `--allow-destructive`, and still require confirmation + reason ([src/tools/destructive.ts](src/tools/destructive.ts)).
+- Deleting tools (`controlled_delete`, `db_mutate`) are always registered but gated by the runtime safety level — destructive actions additionally require `destructive` level + confirmation + reason ([src/tools/destructive.ts](src/tools/destructive.ts)).
 - **Default read-only mode can only write the scratch zone** (`/tmp`, no confirm, for script/doc generation) and `/dev/null` (output discard, treated as read). All other file writes, system-state changes (services/processes/packages/mounts/crontab), and data-source writes (SQL `INSERT`/`UPDATE`/`CREATE`/`ALTER`, `redis-cli`/`mongosh` write commands) are blocked; read queries are unaffected.
 - `write`/`edit` tools are available by default but `PolicyGuard` confines them to the scratch zone (configurable via `OPAGENT_SCRATCH_PATHS`); whitelist writes still need `--allow-write` + per-action confirm.
 - Scratch-zone scripts must go through `run_script` (direct `bash /tmp/x.sh` is blocked — content is unverified); inside the sandbox the write boundary is enforced by the OS.
 - Collectors that run commands/SQL route through `PolicyGuard` too (defense in depth) — [src/monitor/builtin/collectors/file_sql_cmd.ts](src/monitor/builtin/collectors/file_sql_cmd.ts).
 - Generated scripts go through `run_script`: `bash -n` syntax check → `dry_run` preview → policy + LLM audit → confirm → OS-sandboxed execute ([src/tools/script.ts](src/tools/script.ts)).
+
+### In-session safety level (temporary escalation)
+
+Read-only investigations often end with a plan that needs execution. Instead of restarting the agent with `--allow-write`, you can **temporarily raise the safety level inside the session and drop back to read-only afterwards** ([src/safety/level.ts](src/safety/level.ts) · [src/safety/level-extension.ts](src/safety/level-extension.ts)):
+
+| Level         | Gates                                                                             | Typical use                        |
+| ------------- | --------------------------------------------------------------------------------- | ---------------------------------- |
+| `readonly`    | scratch + `/dev/null` only; everything else blocked                               | Default. Investigation & reporting |
+| `write`       | whitelist + system writes allowed (per-action confirm); destructive still blocked | Execute the proposed plan          |
+| `destructive` | writes + destructive channel (double confirm + reason)                            | Rare, tightly-scoped cleanup       |
+
+Two ways to change the level:
+
+- `/level` slash command — interactive selector in the TUI; optionally pass a level directly (`/level write`).
+- `adjust_level` tool — the model can **request** a change with a reason, but it only takes effect after you approve the confirmation dialog. The model cannot escalate on its own.
+
+Safety semantics:
+
+- Escalation always requires explicit user confirmation; de-escalation is instant and confirm-free.
+- Every change (approved or rejected) is written to the audit chain with the approver and reason.
+- Level changes only flip the `allowWrite` / `allowDestructive` gates (and the OS sandbox switch). **Hard-protected paths stay blocked at every level.**
+- While elevated, the status bar shows the current level, and each turn's system prompt is annotated so the model knows to call `adjust_level(mode="readonly")` once the plan has been executed.
 
 ### Audit chain
 
@@ -200,19 +222,19 @@ opagent monitor new-notifier <name>  # scaffold a custom notifier
 
 ### Flags & env vars
 
-| Flag                  | Env                           | Default                      | Description                                 |
-| --------------------- | ----------------------------- | ---------------------------- | ------------------------------------------- |
-| `--model`             | `OPAGENT_MODEL`               | `deepseek/deepseek-v4-flash` | Model `provider/model`                      |
-| `--allow-write`       | `OPAGENT_ALLOW_WRITE=1`       | off                          | Enable writes (confirmed)                   |
-| `--allow-destructive` | `OPAGENT_ALLOW_DESTRUCTIVE=1` | off                          | Enable destructive ops (confirmed + reason) |
-| `--llm_audit`         | `OPAGENT_LLM_AUDIT=1`         | off                          | LLM semantic audit                          |
-| `--cwd`               | —                             | `process.cwd()`              | Working directory                           |
-| `-p, --print`         | —                             | —                            | Headless one-shot                           |
-| —                     | `OPAGENT_DIR`                 | `~/.op_agent`                | Config directory                            |
-| —                     | `OPAGENT_WRITE_PATHS`         | `<cwd>/workspace`            | Write allowlist (colon-separated)           |
-| —                     | `OPAGENT_SCRATCH_PATHS`       | `/tmp`                       | Scratch zone, no-confirm writable (colon-separated; point only at real temp dirs) |
+| Flag                  | Env                           | Default                      | Description                                                                                                    |
+| --------------------- | ----------------------------- | ---------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| `--model`             | `OPAGENT_MODEL`               | `deepseek/deepseek-v4-flash` | Model `provider/model`                                                                                         |
+| `--allow-write`       | `OPAGENT_ALLOW_WRITE=1`       | off                          | Enable writes (confirmed)                                                                                      |
+| `--allow-destructive` | `OPAGENT_ALLOW_DESTRUCTIVE=1` | off                          | Enable destructive ops (confirmed + reason)                                                                    |
+| `--llm_audit`         | `OPAGENT_LLM_AUDIT=1`         | off                          | LLM semantic audit                                                                                             |
+| `--cwd`               | —                             | `process.cwd()`              | Working directory                                                                                              |
+| `-p, --print`         | —                             | —                            | Headless one-shot                                                                                              |
+| —                     | `OPAGENT_DIR`                 | `~/.op_agent`                | Config directory                                                                                               |
+| —                     | `OPAGENT_WRITE_PATHS`         | `<cwd>/workspace`            | Write allowlist (colon-separated)                                                                              |
+| —                     | `OPAGENT_SCRATCH_PATHS`       | `/tmp`                       | Scratch zone, no-confirm writable (colon-separated; point only at real temp dirs)                              |
 | —                     | `OPAGENT_SANDBOX`             | `auto`                       | `run_script` OS sandbox: `auto` (use if available, fallback + audit warn) / `require` (refuse without) / `off` |
-| —                     | `OPAGENT_AUDIT_DB`            | `~/.op_agent/audit.db`       | Audit DB path                               |
+| —                     | `OPAGENT_AUDIT_DB`            | `~/.op_agent/audit.db`       | Audit DB path                                                                                                  |
 
 ---
 

@@ -13,11 +13,11 @@
  * 沙箱强制反而可能把确认过的脚本截断在半执行状态。
  */
 
-import { realpathSync } from "node:fs";
-import type { AuditStore } from "../audit/store.ts";
+import { realpathSync } from 'node:fs';
+import type { AuditStore } from '../audit/store.ts';
 
-export type SandboxKind = "sandbox-exec" | "bwrap" | "none";
-export type SandboxPolicy = "auto" | "require" | "off";
+export type SandboxKind = 'sandbox-exec' | 'bwrap' | 'none';
+export type SandboxPolicy = 'auto' | 'require' | 'off';
 
 export interface SandboxInfo {
   kind: SandboxKind;
@@ -28,7 +28,7 @@ export interface SandboxInfo {
 export type ProbeRunner = (argv: string[]) => Promise<{ exitCode: number }>;
 
 const defaultProbe: ProbeRunner = async (argv) => {
-  const proc = Bun.spawn(argv, { stdout: "ignore", stderr: "ignore" });
+  const proc = Bun.spawn(argv, { stdout: 'ignore', stderr: 'ignore' });
   const exitCode = await proc.exited;
   return { exitCode };
 };
@@ -50,36 +50,36 @@ const defaultRealpath: RealpathFn = (p) => {
  * /dev/dtracehelper 是 dyld 进程启动的已知必需写。
  */
 export function buildMacProfile(writableRoots: string[]): string {
-  const allowExprs = writableRoots.map((r) => `(subpath "${r}")`).join("\n    ");
+  const allowExprs = writableRoots.map((r) => `(subpath "${r}")`).join('\n    ');
   return [
-    "(version 1)",
-    "(allow default)",
-    "(deny file-write*)",
-    "(allow file-write*",
+    '(version 1)',
+    '(allow default)',
+    '(deny file-write*)',
+    '(allow file-write*',
     '    (literal "/dev/null")',
     '    (literal "/dev/dtracehelper")',
     `    ${allowExprs}`,
-    ")",
-  ].join("\n");
+    ')',
+  ].join('\n');
 }
 
 /** Linux bwrap 参数：全系统只读挂载，scratch 根可写，独立 /dev 与 /proc */
 export function buildBwrapArgs(writableRoots: string[], argv: string[]): string[] {
-  const args: string[] = ["--ro-bind", "/", "/"];
+  const args: string[] = ['--ro-bind', '/', '/'];
   for (const r of writableRoots) {
-    args.push("--bind", r, r);
+    args.push('--bind', r, r);
   }
   args.push(
-    "--dev",
-    "/dev",
-    "--proc",
-    "/proc",
-    "--tmpfs",
-    "/dev/shm",
-    "--new-session",
-    "--die-with-parent",
-    "--",
-    ...argv,
+    '--dev',
+    '/dev',
+    '--proc',
+    '/proc',
+    '--tmpfs',
+    '/dev/shm',
+    '--new-session',
+    '--die-with-parent',
+    '--',
+    ...argv
   );
   return args;
 }
@@ -87,30 +87,33 @@ export function buildBwrapArgs(writableRoots: string[], argv: string[]): string[
 /** 探测可用沙箱：先 sandbox-exec（macOS），后 bwrap（Linux），进程级缓存由调用方管理 */
 export async function detectSandbox(runner: ProbeRunner = defaultProbe): Promise<SandboxInfo> {
   try {
-    const r = await runner(["sandbox-exec", "-p", "(version 1)(allow default)", "/usr/bin/true"]);
-    if (r.exitCode === 0) return { kind: "sandbox-exec", detail: "macOS sandbox-exec 可用" };
+    const r = await runner(['sandbox-exec', '-p', '(version 1)(allow default)', '/usr/bin/true']);
+    if (r.exitCode === 0) return { kind: 'sandbox-exec', detail: 'macOS sandbox-exec 可用' };
   } catch {
     /* 未安装（非 macOS）→ 尝试 bwrap */
   }
   try {
     const r = await runner([
-      "bwrap",
-      "--ro-bind",
-      "/",
-      "/",
-      "--dev",
-      "/dev",
-      "--proc",
-      "/proc",
-      "--tmpfs",
-      "/dev/shm",
-      "/bin/true",
+      'bwrap',
+      '--ro-bind',
+      '/',
+      '/',
+      '--dev',
+      '/dev',
+      '--proc',
+      '/proc',
+      '--tmpfs',
+      '/dev/shm',
+      '/bin/true',
     ]);
-    if (r.exitCode === 0) return { kind: "bwrap", detail: "Linux bwrap 可用" };
+    if (r.exitCode === 0) return { kind: 'bwrap', detail: 'Linux bwrap 可用' };
   } catch {
     /* 未安装 */
   }
-  return { kind: "none", detail: "sandbox-exec / bwrap 均不可用（macOS 内置前者；Linux 可 apt install bubblewrap）" };
+  return {
+    kind: 'none',
+    detail: 'sandbox-exec / bwrap 均不可用（macOS 内置前者；Linux 可 apt install bubblewrap）',
+  };
 }
 
 export interface SandboxRunnerDeps {
@@ -126,9 +129,7 @@ export interface SandboxRunnerDeps {
 }
 
 /** 包装结果：refused 时须拒绝执行 */
-export type WrapResult =
-  | { refused: false; argv: string[] }
-  | { refused: true; reason: string };
+export type WrapResult = { refused: false; argv: string[] } | { refused: true; reason: string };
 
 export class SandboxRunner {
   private cachedInfo?: Promise<SandboxInfo>;
@@ -136,9 +137,12 @@ export class SandboxRunner {
   readonly writableRoots: string[];
   /** 沙箱策略（script.ts 按 require 决定不可用时拒绝） */
   readonly policy: SandboxPolicy;
+  /** 运行时可变：会话内调级（/level 或 adjust_level）时同步更新 */
+  private allowWriteFlag: boolean;
 
   constructor(private deps: SandboxRunnerDeps) {
     this.policy = deps.policy;
+    this.allowWriteFlag = deps.allowWrite;
     const rp = deps.realpath ?? defaultRealpath;
     const roots = new Set<string>();
     for (const p of deps.scratchPaths) {
@@ -149,6 +153,11 @@ export class SandboxRunner {
     this.writableRoots = [...roots];
   }
 
+  /** 会话内调级时同步沙箱开关（写模式升级后沙箱停用，降级后恢复） */
+  setAllowWrite(allowWrite: boolean): void {
+    this.allowWriteFlag = allowWrite;
+  }
+
   /** 探测结果（进程级缓存） */
   info(): Promise<SandboxInfo> {
     if (!this.cachedInfo) this.cachedInfo = detectSandbox(this.deps.probe);
@@ -157,13 +166,13 @@ export class SandboxRunner {
 
   /** 是否应启用沙箱：默认（!allowWrite）模式且策略非 off */
   shouldSandbox(): boolean {
-    return this.deps.policy !== "off" && !this.deps.allowWrite;
+    return this.deps.policy !== 'off' && !this.allowWriteFlag;
   }
 
   /** 沙箱是否实际生效（应启用且探测可用）——extension 用于 run_script 的 sandboxed 上下文 */
   async sandboxActive(): Promise<boolean> {
     if (!this.shouldSandbox()) return false;
-    return (await this.info()).kind !== "none";
+    return (await this.info()).kind !== 'none';
   }
 
   /**
@@ -173,9 +182,12 @@ export class SandboxRunner {
   async wrap(argv: string[]): Promise<WrapResult> {
     const info = await this.info();
     switch (info.kind) {
-      case "sandbox-exec":
-        return { refused: false, argv: ["sandbox-exec", "-p", buildMacProfile(this.writableRoots), ...argv] };
-      case "bwrap":
+      case 'sandbox-exec':
+        return {
+          refused: false,
+          argv: ['sandbox-exec', '-p', buildMacProfile(this.writableRoots), ...argv],
+        };
+      case 'bwrap':
         return { refused: false, argv: buildBwrapArgs(this.writableRoots, argv) };
       default:
         return {
@@ -190,10 +202,10 @@ export class SandboxRunner {
   auditEnabled(tool: string, info: SandboxInfo) {
     this.deps.audit.append({
       ts: Date.now(),
-      tool: "sandbox",
+      tool: 'sandbox',
       input: tool,
       result: `enabled:${info.kind}`,
-      risk: "read",
+      risk: 'read',
       blocked: false,
       reason: `${tool} 在 OS 沙箱中执行`,
     });
@@ -202,10 +214,10 @@ export class SandboxRunner {
   auditFallback(tool: string, info: SandboxInfo) {
     this.deps.audit.append({
       ts: Date.now(),
-      tool: "sandbox",
+      tool: 'sandbox',
       input: tool,
       result: `fallback:${info.kind}`,
-      risk: "write",
+      risk: 'write',
       blocked: false,
       reason: `OS 沙箱不可用（${info.detail}），回退模式层执行——深度防御缺失，建议安装 bwrap 或 sandbox-exec`,
     });
@@ -214,10 +226,10 @@ export class SandboxRunner {
   auditRefused(tool: string, info: SandboxInfo) {
     this.deps.audit.append({
       ts: Date.now(),
-      tool: "sandbox",
+      tool: 'sandbox',
       input: tool,
       result: `refused:${info.kind}`,
-      risk: "write",
+      risk: 'write',
       blocked: true,
       reason: `OS 沙箱不可用（${info.detail}），OPAGENT_SANDBOX=require 已拒绝执行`,
     });

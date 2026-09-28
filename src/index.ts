@@ -24,6 +24,8 @@ import { loadConfig, type OpAgentConfig } from './config.ts';
 import { buildSystemPrompt } from './prompt.ts';
 import { PolicyGuard } from './safety/policy.ts';
 import { createSafetyExtension } from './safety/extension.ts';
+import { SafetyLevelManager, modeFromFlags } from './safety/level.ts';
+import { createLevelExtension } from './safety/level-extension.ts';
 import { SandboxRunner } from './safety/sandbox.ts';
 import { createAuditExtension } from './audit/extension.ts';
 import { createAuditStore } from './audit/store.ts';
@@ -111,6 +113,13 @@ run_script 生成的脚本在 OS 沙箱中执行（仅 /tmp 与 /dev/null 可写
   --self-test               自检：加载配置/策略/沙箱/工具/技能并打印摘要
   -h, --help                显示帮助
 
+会话内调级:
+  默认只读模式下，可在交互对话框中临时升降安全级别：
+  /level                    查看/切换安全级别（readonly / write / destructive）
+  adjust_level 工具         模型发起调级请求，需用户在对话框中显式确认；
+                           提权后执行方案，完成后降回 readonly。
+  级别变更写入审计链；硬保护路径在任何级别下都保持阻断。
+
 环境变量:
   DEEPSEEK_API_KEY          DeepSeek API 密钥
   OPAGENT_MODEL             模型 provider/model
@@ -173,9 +182,19 @@ async function buildShared(args: CliArgs) {
     );
   }
 
+  // 会话内安全级别管理：启动级别由 CLI flags / env 决定，运行时可经 /level 或 adjust_level 临时升降
+  const levelManager = new SafetyLevelManager({
+    initialMode: modeFromFlags(config.allowWrite, config.allowDestructive),
+    audit,
+  });
+
   const safetyLevel = {
-    allowWrite: config.allowWrite,
-    allowDestructive: config.allowDestructive,
+    get allowWrite() {
+      return levelManager.gates.allowWrite;
+    },
+    get allowDestructive() {
+      return levelManager.gates.allowDestructive;
+    },
   };
 
   const extensions: InlineExtension[] = [
@@ -188,6 +207,17 @@ async function buildShared(args: CliArgs) {
         safetyLevel,
         allowWrite: config.allowWrite,
         sandbox,
+      }),
+    },
+    {
+      name: 'opagent-level',
+      factory: createLevelExtension({
+        manager: levelManager,
+        guard,
+        sandbox,
+        audit,
+        startupAllowWrite: config.allowWrite,
+        startupAllowDestructive: config.allowDestructive,
       }),
     },
     { name: 'opagent-audit', factory: createAuditExtension(audit) },
@@ -210,9 +240,9 @@ async function buildShared(args: CliArgs) {
     ...createScriptTools({ sandbox, scratchPaths: config.scratchPaths }),
     ...monitorTools,
   ];
-  if (config.allowDestructive) {
-    customTools.push(...createDestructiveTools(guard));
-  }
+  // 破坏性工具始终注册：实际可用性由运行时级别门禁（allowDestructive）控制，
+  // 会话内可通过 /level 或 adjust_level 临时开启
+  customTools.push(...createDestructiveTools(guard));
 
   const builtinSkills = loadBuiltinSkills(config.skillsDir);
   return {
@@ -221,6 +251,7 @@ async function buildShared(args: CliArgs) {
     audit,
     sandbox,
     auditor,
+    levelManager,
     registry,
     monitorDbPath,
     extensions,
@@ -311,6 +342,9 @@ async function selfTest(shared: Awaited<ReturnType<typeof buildShared>>) {
   console.log(`API Key    : ${config.apiKey ? '已设置' : '未设置'}`);
   console.log(`允许写     : ${config.allowWrite}`);
   console.log(`允许破坏性 : ${config.allowDestructive}`);
+  console.log(
+    `会话调级   : /level 命令 + adjust_level 工具（启动级别 ${shared.levelManager.label}）`
+  );
   console.log(
     `LLM审计    : ${config.llmAudit ? `启用 (${config.auditModel}${shared.auditor?.enabled ? '' : ', 无key跳过'})` : '关闭'}`
   );
