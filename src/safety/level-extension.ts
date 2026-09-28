@@ -41,11 +41,11 @@ const STATUS_KEY = 'opagent-level';
 function modeDescription(mode: SafetyMode): string {
   switch (mode) {
     case 'readonly':
-      return '仅 scratch(/tmp) 与 /dev/null 可写；其余写/系统变更/破坏性操作一律阻断';
+      return '仅 scratch(/tmp) 与 /dev/null 可写；其余写/系统变更/破坏性操作一律阻断（数据源仅可读）';
     case 'write':
-      return '白名单写与系统写放行（每次仍需确认）；破坏性操作仍阻断';
+      return '白名单写、系统写与数据源写（SQL INSERT/UPDATE/CREATE、redis SET/DEL、mongo insertOne 等）放行（每次仍需确认）；破坏性操作仍阻断';
     case 'write_all':
-      return '写操作放行且免逐次确认（需启动时 --allow-write-all）；破坏性操作仍阻断';
+      return '写操作（含数据源写）放行且免逐次确认（需启动时 --allow-write-all）；破坏性操作仍阻断';
     case 'destructive':
       return '写放行（逐次确认）+ 破坏性通道开启（二次确认 + 理由）';
   }
@@ -282,6 +282,8 @@ export function createLevelExtension(deps: LevelExtensionDeps) {
       const writeAllNote = deps.guard.writeAll
         ? '- 已启用 --allow-write-all：写操作免逐次确认（硬保护路径与破坏性门禁仍生效）。'
         : '';
+      const dsNote =
+        '- 数据源写已放开：SQL 写（INSERT/UPDATE/CREATE/ALTER）与 redis/mongo 写命令可执行（仍逐次确认；DROP/TRUNCATE/无 WHERE DELETE 等破坏性操作仍需 destructive 级别）。';
       const note = [
         '',
         '# 当前安全级别（会话内临时调整）',
@@ -290,6 +292,7 @@ export function createLevelExtension(deps: LevelExtensionDeps) {
         `- allowWrite=${gates.allowWrite}，allowDestructive=${gates.allowDestructive}`,
         `- ${modeDescription(mode)}`,
         writeAllNote,
+        dsNote,
         '- 这是用户批准的临时提权：完成后应主动调用 adjust_level(mode="readonly") 降回只读。',
       ]
         .filter(Boolean)

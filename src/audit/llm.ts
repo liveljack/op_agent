@@ -10,7 +10,7 @@
  * 默认走 DeepSeek OpenAI 兼容端点；可用 OPAGENT_AUDIT_* 独立配置（推荐用更便宜的模型）。
  */
 
-import type { Risk } from "../safety/policy.ts";
+import type { Risk } from '../safety/policy.ts';
 
 export interface SafetyLevel {
   allowWrite: boolean;
@@ -44,8 +44,14 @@ const RISK_VALUES: Record<Risk, number> = { read: 0, write: 1, destructive: 2 };
 
 /** 取两者更严的判定（LLM 只能升级，不能降级模式层） */
 export function mergeDecisions(
-  pattern: { allow: boolean; risk: Risk; requireConfirm: boolean; reason?: string; matches: string[] },
-  llm: LlmAuditResult,
+  pattern: {
+    allow: boolean;
+    risk: Risk;
+    requireConfirm: boolean;
+    reason?: string;
+    matches: string[];
+  },
+  llm: LlmAuditResult
 ) {
   // 模式层已阻断 → 维持
   if (!pattern.allow) return pattern;
@@ -60,8 +66,7 @@ export function mergeDecisions(
     };
   }
   // 合并：取更高风险、任一需确认则确认
-  const risk: Risk =
-    RISK_VALUES[llm.risk] > RISK_VALUES[pattern.risk] ? llm.risk : pattern.risk;
+  const risk: Risk = RISK_VALUES[llm.risk] > RISK_VALUES[pattern.risk] ? llm.risk : pattern.risk;
   return {
     allow: true,
     risk,
@@ -82,7 +87,8 @@ function buildPrompt(input: LlmAuditInput, level: SafetyLevel): { system: string
 - 写文件、改配置、重启服务、安装包、执行脚本 → write
 - 写 SQL（INSERT/UPDATE/CREATE/ALTER/GRANT/REPLACE/MERGE）与 NoSQL 数据源写命令
   （redis-cli SET/DEL/FLUSHALL、mongosh insertOne/updateOne/deleteOne/drop 等）→ write，
-  allowWrite=false 时 block；只读查询（SELECT、redis GET/SCAN、db.find）→ allow, risk=read
+  allowWrite=false 时 block；allowWrite=true 时 allow（requireConfirm=true，由确认门处理）；
+  只读查询（SELECT、redis GET/SCAN、db.find）→ allow, risk=read
 - 变量间接构造（a=rm;$a）、编码混淆（base64|sh）、管道喂 shell（| sh）、数据外泄（nc/curl 上传敏感文件）、提权（sudo/su）→ 一律 block
 - 路径穿越（../）、写 /tmp 之外的文件（含经符号链接逃逸出 /tmp）、访问 /etc/shadow ~/.ssh /proc /sys /dev /boot → block
 - 只读检查（df/free/ps/cat 普通文件/systemctl status）、重定向到 /dev/null、写 /tmp 临时区 → allow
@@ -90,7 +96,7 @@ function buildPrompt(input: LlmAuditInput, level: SafetyLevel): { system: string
 只返回严格 JSON，无其它文字：
 {"allow": bool, "risk": "read"|"write"|"destructive", "requireConfirm": bool, "reason": "简短中文理由"}`;
 
-  const user = `工具: ${input.tool}${input.context ? `\n上下文: ${input.context}` : ""}
+  const user = `工具: ${input.tool}${input.context ? `\n上下文: ${input.context}` : ''}
 操作内容:
 ${input.command}`;
   return { system, user };
@@ -109,41 +115,46 @@ export class LlmAuditor {
 
   async audit(input: LlmAuditInput, level: SafetyLevel): Promise<LlmAuditResult> {
     if (!this.enabled) {
-      return { allow: true, risk: "read", requireConfirm: false, reason: "LLM 审计未配置 key，跳过" };
+      return {
+        allow: true,
+        risk: 'read',
+        requireConfirm: false,
+        reason: 'LLM 审计未配置 key，跳过',
+      };
     }
     const { system, user } = buildPrompt(input, level);
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
     try {
-      const res = await fetch(`${this.opts.baseUrl.replace(/\/$/, "")}/chat/completions`, {
-        method: "POST",
+      const res = await fetch(`${this.opts.baseUrl.replace(/\/$/, '')}/chat/completions`, {
+        method: 'POST',
         headers: {
-          "Content-Type": "application/json",
+          'Content-Type': 'application/json',
           Authorization: `Bearer ${this.opts.apiKey}`,
         },
         body: JSON.stringify({
           model: this.opts.model,
           temperature: 0,
-          response_format: { type: "json_object" },
+          response_format: { type: 'json_object' },
           messages: [
-            { role: "system", content: system },
-            { role: "user", content: user },
+            { role: 'system', content: system },
+            { role: 'user', content: user },
           ],
         }),
         signal: controller.signal,
       });
       if (!res.ok) {
-        const txt = await res.text().catch(() => "");
+        const txt = await res.text().catch(() => '');
         return this.failSafe(`LLM 审计请求失败 ${res.status}: ${txt.slice(0, 200)}`);
       }
       const data = (await res.json()) as any;
-      const content = data?.choices?.[0]?.message?.content ?? "{}";
+      const content = data?.choices?.[0]?.message?.content ?? '{}';
       const parsed = JSON.parse(content) as Partial<LlmAuditResult>;
       return {
         allow: Boolean(parsed.allow),
         risk: this.normalizeRisk(parsed.risk),
         requireConfirm: Boolean(parsed.requireConfirm),
-        reason: String(parsed.reason ?? "LLM 审计完成"),
+        reason: String(parsed.reason ?? 'LLM 审计完成'),
       };
     } catch (e: any) {
       return this.failSafe(`LLM 审计异常: ${e?.message ?? e}`);
@@ -154,11 +165,11 @@ export class LlmAuditor {
 
   /** fail-safe：审计失败时升级为需人工确认（不静默放行写/破坏性操作） */
   private failSafe(reason: string): LlmAuditResult {
-    return { allow: true, risk: "write", requireConfirm: true, reason };
+    return { allow: true, risk: 'write', requireConfirm: true, reason };
   }
 
   private normalizeRisk(r: unknown): Risk {
-    if (r === "write" || r === "destructive") return r;
-    return "read";
+    if (r === 'write' || r === 'destructive') return r;
+    return 'read';
   }
 }
