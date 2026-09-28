@@ -17,9 +17,10 @@ function makeMemoryAudit(): AuditStore & { records: AuditRecord[] } {
   };
 }
 
-function makeGuard(allowWrite = false, allowDestructive = false) {
+function makeGuard(allowWrite = false, allowDestructive = false, allowWriteAll = false) {
   return new PolicyGuard({
     allowWrite,
+    allowWriteAll,
     allowDestructive,
     writePaths: ['/data/workspace'],
     cwd: '/data/workspace',
@@ -33,6 +34,7 @@ describe('SafetyLevelManager', () => {
   test('modeFromFlags：flags 组合映射级别', () => {
     expect(modeFromFlags(false, false)).toBe('readonly');
     expect(modeFromFlags(true, false)).toBe('write');
+    expect(modeFromFlags(true, false, true)).toBe('write_all');
     expect(modeFromFlags(true, true)).toBe('destructive');
     expect(modeFromFlags(false, true)).toBe('destructive');
   });
@@ -168,8 +170,56 @@ describe('级别流转场景（排查 → 提权执行 → 降回）', () => {
   });
 
   test('SAFETY_MODES 顺序：索引即严重度，提权判定依赖它', () => {
-    expect(SAFETY_MODES).toEqual(['readonly', 'write', 'destructive']);
+    expect(SAFETY_MODES).toEqual(['readonly', 'write', 'write_all', 'destructive']);
     expect(SAFETY_MODES.indexOf('write')).toBeGreaterThan(SAFETY_MODES.indexOf('readonly'));
-    expect(SAFETY_MODES.indexOf('destructive')).toBeGreaterThan(SAFETY_MODES.indexOf('write'));
+    expect(SAFETY_MODES.indexOf('write_all')).toBeGreaterThan(SAFETY_MODES.indexOf('write'));
+    expect(SAFETY_MODES.indexOf('destructive')).toBeGreaterThan(SAFETY_MODES.indexOf('write_all'));
+  });
+
+  test('write_all 模式：写操作免确认放行，破坏性仍需确认', () => {
+    const g = makeGuard(true, false, true);
+    // 白名单写：免确认
+    const w = g.checkWritePath('/data/workspace/x.txt');
+    expect(w.allow).toBe(true);
+    expect(w.requireConfirm).toBe(false);
+    // 系统写：免确认
+    const s = g.checkBash('systemctl restart nginx');
+    expect(s.allow).toBe(true);
+    expect(s.requireConfirm).toBe(false);
+    // 写 SQL：免确认
+    const sql = g.checkSql('INSERT INTO t VALUES(1)');
+    expect(sql.allow).toBe(true);
+    expect(sql.requireConfirm).toBe(false);
+    // 破坏性：仍需二次确认（write_all 不影响破坏性门禁）
+    const d = g.checkBash('rm -rf /data/workspace/x');
+    expect(d.allow).toBe(false); // allowDestructive=false 时仍阻断
+    const g2 = makeGuard(true, true, true);
+    const d2 = g2.checkBash('rm -rf /data/workspace/x');
+    expect(d2.allow).toBe(true);
+    expect(d2.requireConfirm).toBe(true);
+    // 硬保护路径：仍阻断
+    expect(g.checkBash('echo hi > /etc/passwd').allow).toBe(false);
+  });
+
+  test('write 模式：数据源写（SQL/redis/mongo）放行但需确认', () => {
+    const g = makeGuard(true, false);
+    // 写 SQL：allowWrite 时放行需确认
+    const sql = g.checkBash('psql -c "INSERT INTO t VALUES(1)"');
+    expect(sql.allow).toBe(true);
+    expect(sql.requireConfirm).toBe(true);
+    // redis 写：allowWrite 时放行需确认
+    const redis = g.checkBash('redis-cli SET k v');
+    expect(redis.allow).toBe(true);
+    expect(redis.requireConfirm).toBe(true);
+    // mongo 写：allowWrite 时放行需确认
+    const mongo = g.checkBash('mongosh --eval "db.users.insertOne({a:1})"');
+    expect(mongo.allow).toBe(true);
+    expect(mongo.requireConfirm).toBe(true);
+    // 破坏性 SQL：仍阻断
+    expect(g.checkBash("psql -c 'DROP TABLE t'").allow).toBe(false);
+    // 只读模式：数据源写仍阻断
+    const ro = makeGuard(false, false);
+    expect(ro.checkBash('redis-cli SET k v').allow).toBe(false);
+    expect(ro.checkBash('psql -c "INSERT INTO t VALUES(1)"').allow).toBe(false);
   });
 });

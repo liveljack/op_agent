@@ -26,6 +26,8 @@ export interface OpAgentConfig {
   cwd: string;
   /** 是否允许写操作 */
   allowWrite: boolean;
+  /** 是否允许写操作免确认（--allow-write-all）：写放行且不再逐次确认 */
+  allowWriteAll: boolean;
   /** 是否允许破坏性操作 */
   allowDestructive: boolean;
   /** 写操作路径白名单（绝对路径前缀） */
@@ -103,6 +105,7 @@ export function loadConfig(overrides: Partial<OpAgentConfig> = {}): OpAgentConfi
   loadEnvFile(join(agentDir, '.env'));
 
   const allowWrite = overrides.allowWrite ?? process.env.OPAGENT_ALLOW_WRITE === '1';
+  const allowWriteAll = overrides.allowWriteAll ?? process.env.OPAGENT_ALLOW_WRITE_ALL === '1';
   const allowDestructive =
     overrides.allowDestructive ?? process.env.OPAGENT_ALLOW_DESTRUCTIVE === '1';
 
@@ -129,6 +132,7 @@ export function loadConfig(overrides: Partial<OpAgentConfig> = {}): OpAgentConfi
     agentDir,
     cwd,
     allowWrite,
+    allowWriteAll,
     allowDestructive,
     writePaths: overrides.writePaths ?? writePaths,
     scratchPaths,

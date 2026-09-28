@@ -109,6 +109,8 @@ export interface PolicyDecision {
 export interface PolicyGuardOptions {
   /** 是否允许写操作（--allow-write） */
   allowWrite: boolean;
+  /** 是否允许写操作免确认（--allow-write-all）：写放行且不再逐次确认 */
+  allowWriteAll?: boolean;
   /** 是否允许破坏性操作（--allow-destructive） */
   allowDestructive: boolean;
   /** 写操作路径白名单（绝对路径前缀） */
@@ -163,11 +165,14 @@ export class PolicyGuard {
    */
   private allowWriteFlag: boolean;
   private allowDestructiveFlag: boolean;
+  /** 写免确认门禁（--allow-write-all）：仅随构造时的 opts 固定，不随会话调级变化 */
+  private readonly allowWriteAllFlag: boolean;
 
   constructor(private opts: PolicyGuardOptions) {
     this.realpathFn = opts.realpath ?? defaultRealpath;
     this.allowWriteFlag = opts.allowWrite;
     this.allowDestructiveFlag = opts.allowDestructive;
+    this.allowWriteAllFlag = opts.allowWriteAll ?? false;
     const scratch = opts.scratchPaths ?? ['/tmp'];
     const roots = new Set<string>();
     for (const p of scratch) {
@@ -182,6 +187,26 @@ export class PolicyGuard {
   /** 当前门禁（只读快照，供 UI 展示） */
   get level(): { allowWrite: boolean; allowDestructive: boolean } {
     return { allowWrite: this.allowWriteFlag, allowDestructive: this.allowDestructiveFlag };
+  }
+
+  /** 写免确认门禁（--allow-write-all） */
+  get writeAll(): boolean {
+    return this.allowWriteAllFlag;
+  }
+
+  /**
+   * 写类决策的确认要求：--allow-write-all 时写操作免确认放行。
+   * 仅影响 requireConfirm；allow/allowDestructive/硬保护路径判定不受影响。
+   */
+  private confirmForWrite(decision: PolicyDecision): PolicyDecision {
+    if (this.allowWriteAllFlag) {
+      return {
+        ...decision,
+        requireConfirm: false,
+        reason: `${decision.reason ?? '写操作'}（--allow-write-all 免确认）`,
+      };
+    }
+    return decision;
   }
 
   /**
@@ -263,13 +288,13 @@ export class PolicyGuard {
           matches,
         };
       }
-      return {
+      return this.confirmForWrite({
         allow: true,
         risk: 'write',
         requireConfirm: true,
         reason: `直接执行 scratch 脚本，需确认：${scratchExecHits.join(', ')}`,
         matches,
-      };
+      });
     }
 
     // 4. 写类命令：全量收集命中，按 kind 分流
@@ -298,13 +323,13 @@ export class PolicyGuard {
           matches,
         };
       }
-      return {
+      return this.confirmForWrite({
         allow: true,
         risk: 'write',
         requireConfirm: true,
         reason: `写操作，需确认：${[...sysHits, ...fileHits].join(', ')}${hint}`,
         matches,
-      };
+      });
     };
 
     // 系统状态变更（服务/进程/包管理/挂载/crontab/数据源写）：永不享受 scratch 豁免
@@ -391,14 +416,14 @@ export class PolicyGuard {
             matches,
           };
         }
-        return {
+        return this.confirmForWrite({
           allow: true,
           risk: 'write',
           requireConfirm: true,
           zone: 'outside',
           reason: `写 SQL，需确认：${pat.name}`,
           matches,
-        };
+        });
       }
     }
     return { ...ALLOW_READ, matches };
@@ -510,14 +535,14 @@ export class PolicyGuard {
           matches,
         };
       }
-      return {
+      return this.confirmForWrite({
         allow: true,
         risk: 'write',
         requireConfirm: true,
         zone: 'whitelist',
         reason: `写操作，需确认：${abs}`,
         matches,
-      };
+      });
     }
 
     // delete 路径已通过硬保护检查；是否在白名单内决定是否可删

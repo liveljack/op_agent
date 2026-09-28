@@ -8,21 +8,30 @@
  * 级别（从低到高）：
  * - readonly     ：默认。仅 scratch(/tmp) 与 /dev/null 可写，其余写/破坏性一律阻断。
  * - write        ：白名单写 + 系统写放行（仍逐次确认）；破坏性仍阻断。
+ * - write_all    ：在 write 基础上写操作免确认（--allow-write-all）；破坏性仍阻断。
  * - destructive  ：在 write 基础上放开破坏性通道（仍需二次确认 + 理由）。
  *
  * 硬保护路径（/etc /boot /proc ~/.ssh 等）在任何级别下都保持阻断——
  * 运行时调级只影响 allowWrite / allowDestructive 两个门禁，不触碰硬保护规则。
+ * write_all 的免确认门禁由启动 flag 固定（PolicyGuard.writeAll），不随会话调级变化：
+ * 会话内切到 write_all 仅在启动时已开启 --allow-write-all 时才真正免确认。
  */
 
 import type { AuditStore } from '../audit/store.ts';
 
-export type SafetyMode = 'readonly' | 'write' | 'destructive';
+export type SafetyMode = 'readonly' | 'write' | 'write_all' | 'destructive';
 
-export const SAFETY_MODES: readonly SafetyMode[] = ['readonly', 'write', 'destructive'];
+export const SAFETY_MODES: readonly SafetyMode[] = [
+  'readonly',
+  'write',
+  'write_all',
+  'destructive',
+];
 
 export const SAFETY_MODE_LABELS: Record<SafetyMode, string> = {
   readonly: '只读（默认）',
   write: '允许写（逐次确认）',
+  write_all: '允许写（免确认）',
   destructive: '允许写 + 破坏性（二次确认）',
 };
 
@@ -76,8 +85,13 @@ export class SafetyLevelManager {
 }
 
 /** 由 CLI flags / env 推导启动级别（与 loadConfig 的 allowWrite/allowDestructive 一致） */
-export function modeFromFlags(allowWrite: boolean, allowDestructive: boolean): SafetyMode {
+export function modeFromFlags(
+  allowWrite: boolean,
+  allowDestructive: boolean,
+  allowWriteAll = false
+): SafetyMode {
   if (allowDestructive) return 'destructive';
+  if (allowWriteAll) return 'write_all';
   if (allowWrite) return 'write';
   return 'readonly';
 }

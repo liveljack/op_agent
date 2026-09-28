@@ -43,6 +43,7 @@ import { join } from 'node:path';
 
 interface CliArgs {
   allowWrite?: boolean;
+  allowWriteAll?: boolean;
   allowDestructive?: boolean;
   llmAudit?: boolean;
   model?: string;
@@ -62,6 +63,10 @@ function parseArgs(argv: string[]): CliArgs {
     switch (a) {
       case '--allow-write':
         args.allowWrite = true;
+        break;
+      case '--allow-write-all':
+        args.allowWrite = true;
+        args.allowWriteAll = true;
         break;
       case '--allow-destructive':
         args.allowDestructive = true;
@@ -104,6 +109,7 @@ run_script 生成的脚本在 OS 沙箱中执行（仅 /tmp 与 /dev/null 可写
 
 选项:
   --allow-write             开启白名单写操作（仍逐次确认；scratch 区始终免确认）
+  --allow-write-all         开启写操作且免逐次确认（硬保护路径与破坏性门禁仍生效）
   --allow-destructive       开启破坏性操作通道（仍需二次确认 + 理由）
   --llm_audit               启用 LLM 语义审计：写/破坏性命令与脚本额外过 LLM 审计
                            （与 --allow-write/--allow-destructive 配合定安全等级）
@@ -125,6 +131,7 @@ run_script 生成的脚本在 OS 沙箱中执行（仅 /tmp 与 /dev/null 可写
   OPAGENT_MODEL             模型 provider/model
   OPAGENT_DIR               配置目录（默认 ~/.op_agent）
   OPAGENT_ALLOW_WRITE=1     等同 --allow-write
+  OPAGENT_ALLOW_WRITE_ALL=1 等同 --allow-write-all
   OPAGENT_ALLOW_DESTRUCTIVE=1
   OPAGENT_LLM_AUDIT=1       等同 --llm_audit
   OPAGENT_AUDIT_BASE_URL    LLM 审计端点（默认 https://api.deepseek.com）
@@ -145,6 +152,7 @@ run_script 生成的脚本在 OS 沙箱中执行（仅 /tmp 与 /dev/null 可写
 async function buildShared(args: CliArgs) {
   const config = loadConfig({
     allowWrite: args.allowWrite,
+    allowWriteAll: args.allowWriteAll,
     allowDestructive: args.allowDestructive,
     llmAudit: args.llmAudit,
     model: args.model,
@@ -152,6 +160,7 @@ async function buildShared(args: CliArgs) {
   });
   const guard = new PolicyGuard({
     allowWrite: config.allowWrite,
+    allowWriteAll: config.allowWriteAll,
     allowDestructive: config.allowDestructive,
     writePaths: config.writePaths,
     cwd: config.cwd,
@@ -184,7 +193,7 @@ async function buildShared(args: CliArgs) {
 
   // 会话内安全级别管理：启动级别由 CLI flags / env 决定，运行时可经 /level 或 adjust_level 临时升降
   const levelManager = new SafetyLevelManager({
-    initialMode: modeFromFlags(config.allowWrite, config.allowDestructive),
+    initialMode: modeFromFlags(config.allowWrite, config.allowDestructive, config.allowWriteAll),
     audit,
   });
 
@@ -341,6 +350,7 @@ async function selfTest(shared: Awaited<ReturnType<typeof buildShared>>) {
   console.log(`模型       : ${config.model}`);
   console.log(`API Key    : ${config.apiKey ? '已设置' : '未设置'}`);
   console.log(`允许写     : ${config.allowWrite}`);
+  console.log(`写免确认   : ${config.allowWriteAll}（--allow-write-all）`);
   console.log(`允许破坏性 : ${config.allowDestructive}`);
   console.log(
     `会话调级   : /level 命令 + adjust_level 工具（启动级别 ${shared.levelManager.label}）`

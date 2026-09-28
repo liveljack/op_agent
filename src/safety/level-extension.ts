@@ -44,6 +44,8 @@ function modeDescription(mode: SafetyMode): string {
       return '仅 scratch(/tmp) 与 /dev/null 可写；其余写/系统变更/破坏性操作一律阻断';
     case 'write':
       return '白名单写与系统写放行（每次仍需确认）；破坏性操作仍阻断';
+    case 'write_all':
+      return '写操作放行且免逐次确认（需启动时 --allow-write-all）；破坏性操作仍阻断';
     case 'destructive':
       return '写放行（逐次确认）+ 破坏性通道开启（二次确认 + 理由）';
   }
@@ -82,8 +84,12 @@ export function createLevelExtension(deps: LevelExtensionDeps) {
           '',
           `目标级别说明：${modeDescription(mode)}`,
           '硬保护路径（/etc /boot /proc ~/.ssh 等）仍保持阻断。',
-          '所有写/破坏性操作仍逐次确认并写入审计链。',
-        ].join('\n')
+          mode === 'write_all' && !deps.guard.writeAll
+            ? '注意：启动时未开 --allow-write-all，本次切换后写操作仍会逐次确认。'
+            : '所有写/破坏性操作仍逐次确认并写入审计链。',
+        ]
+          .filter(Boolean)
+          .join('\n')
       );
       if (!approved) {
         audit.append({
@@ -101,6 +107,13 @@ export function createLevelExtension(deps: LevelExtensionDeps) {
     manager.set(mode, approver, `via ${via}`);
     applyLevel(deps, ctx, mode);
     ctx.ui.notify(`安全级别：${SAFETY_MODE_LABELS[prev]} → ${SAFETY_MODE_LABELS[mode]}`, 'info');
+    // write_all 的免确认门禁固定于启动 flag：未启用时明确告知实际效果
+    if (mode === 'write_all' && !deps.guard.writeAll) {
+      ctx.ui.notify(
+        '提示：启动时未开 --allow-write-all，写操作仍会逐次确认（免确认需重启并加该参数）',
+        'warning'
+      );
+    }
     return true;
   }
 
@@ -125,10 +138,15 @@ export function createLevelExtension(deps: LevelExtensionDeps) {
         if (arg) {
           ctx.ui.notify(`未知级别「${arg}」，可选：${SAFETY_MODES.join(' / ')}`, 'warning');
         }
-        // 无参数：显示当前级别 + 选择框
-        const options = SAFETY_MODES.map(
-          (m) => `${m === manager.current ? '● ' : '  '}${m} — ${SAFETY_MODE_LABELS[m]}`
-        );
+        // 无参数：显示当前级别 + 选择框（write_all 未启用启动 flag 时标注）
+        const options = SAFETY_MODES.map((m) => {
+          const marker = m === manager.current ? '● ' : '  ';
+          const hint =
+            m === 'write_all' && !deps.guard.writeAll
+              ? '（未启用：需启动时 --allow-write-all）'
+              : '';
+          return `${marker}${m} — ${SAFETY_MODE_LABELS[m]}${hint}`;
+        });
         const selected = await ctx.ui.select(
           `当前级别：${manager.label}（${manager.current}）`,
           options
@@ -147,14 +165,15 @@ export function createLevelExtension(deps: LevelExtensionDeps) {
         name: 'adjust_level',
         label: '调整安全级别',
         description:
-          '请求临时调整会话安全级别（只读/写/破坏性）。用于只读排查完成、给出方案后需要执行的场景。' +
+          '请求临时调整会话安全级别（只读/写/写免确认/破坏性）。用于只读排查完成、给出方案后需要执行的场景。' +
           '调用后会弹出确认对话框，必须由用户显式确认才会生效；用户拒绝时你会收到拒绝通知。' +
           '执行完方案后应主动请求降回 readonly。硬保护路径在任何级别下都保持阻断。',
         parameters: Type.Object({
           mode: Type.Union(
             SAFETY_MODES.map((m) => Type.Literal(m)),
             {
-              description: '目标级别：readonly=只读（默认）/ write=允许写 / destructive=允许破坏性',
+              description:
+                '目标级别：readonly=只读（默认）/ write=允许写（逐次确认）/ write_all=写免确认（需启动时 --allow-write-all）/ destructive=允许破坏性',
             }
           ),
           reason: Type.String({ description: '调级理由（展示给用户并写入审计）' }),
@@ -193,9 +212,14 @@ export function createLevelExtension(deps: LevelExtensionDeps) {
                 `当前：${SAFETY_MODE_LABELS[prev]}`,
                 `目标：${SAFETY_MODE_LABELS[mode]}`,
                 `说明：${modeDescription(mode)}`,
+                mode === 'write_all' && !deps.guard.writeAll
+                  ? '注意：启动时未开 --allow-write-all，本次切换后写操作仍会逐次确认。'
+                  : '',
                 '',
                 '硬保护路径仍保持阻断；所有写/破坏性操作仍逐次确认并写入审计链。',
-              ].join('\n')
+              ]
+                .filter(Boolean)
+                .join('\n')
             );
           } else if (isEscalation && !ctx.hasUI) {
             // 无 UI（print 模式）无法确认 → 拒绝提权
@@ -223,12 +247,17 @@ export function createLevelExtension(deps: LevelExtensionDeps) {
           }
           manager.set(mode, 'user', `adjust_level 工具：${reason}`);
           applyLevel(deps, ctx, mode);
+          const writeAllHint =
+            mode === 'write_all' && !deps.guard.writeAll
+              ? '注意：启动时未开 --allow-write-all，写操作仍会逐次确认。'
+              : '';
           return {
             content: [
               {
                 type: 'text' as const,
                 text:
                   `安全级别已调整：${SAFETY_MODE_LABELS[prev]} → ${SAFETY_MODE_LABELS[mode]}（已写入审计链）。` +
+                  (writeAllHint ? `\n${writeAllHint}` : '') +
                   (mode !== 'readonly'
                     ? '方案执行完成后，请调用 adjust_level(mode=readonly) 降回只读。'
                     : ''),
@@ -250,6 +279,9 @@ export function createLevelExtension(deps: LevelExtensionDeps) {
       const mode = manager.current;
       if (mode === 'readonly') return undefined;
       const gates = manager.gates;
+      const writeAllNote = deps.guard.writeAll
+        ? '- 已启用 --allow-write-all：写操作免逐次确认（硬保护路径与破坏性门禁仍生效）。'
+        : '';
       const note = [
         '',
         '# 当前安全级别（会话内临时调整）',
@@ -257,8 +289,11 @@ export function createLevelExtension(deps: LevelExtensionDeps) {
         `- 级别：${mode}（${SAFETY_MODE_LABELS[mode]}）`,
         `- allowWrite=${gates.allowWrite}，allowDestructive=${gates.allowDestructive}`,
         `- ${modeDescription(mode)}`,
-        '- 这是用户批准的临时提权：执行方案时仍会逐次确认；完成后应主动调用 adjust_level(mode="readonly") 降回只读。',
-      ].join('\n');
+        writeAllNote,
+        '- 这是用户批准的临时提权：完成后应主动调用 adjust_level(mode="readonly") 降回只读。',
+      ]
+        .filter(Boolean)
+        .join('\n');
       return { systemPrompt: _event.systemPrompt + note };
     });
   };
